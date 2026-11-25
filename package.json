@@ -10,6 +10,6 @@
     "start:chromium": "web-ext run --target chromium"
   },
   "devDependencies": {
-    "web-ext": "^"
+    "web-ext": "^8.10.0"
   }
 }
