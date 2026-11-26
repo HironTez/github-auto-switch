@@ -28,7 +28,40 @@ const VERIFY_WINDOW_MS = 30_000;
 const RETRY_WINDOW_MS = 20_000;
 const MAX_ATTEMPTS = 3;
 
-const log = (...args) => console.error("[github-auto-switch]", ...args);
+const log = (...args) => {
+  console.error("[github-auto-switch]", ...args);
+  trace("error", { message: args.map(String).join(" ") });
+};
+
+// ---------------------------------------------------------------------------------------------------
+// Activity log: what the extension saw and did, when turned on in the settings (troubleshooting).
+// Kept in storage.local "activity", the last ACTIVITY_MAX entries, and shown on the settings page.
+
+const ACTIVITY_MAX = 300;
+let activityBuffer = [];
+let activityTimer = null;
+let activityWrites = Promise.resolve();
+
+function trace(event, details = {}) {
+  getSettings().then((settings) => {
+    if (!settings.activityLog) return;
+    activityBuffer.push({ at: Date.now(), event, ...details });
+    clearTimeout(activityTimer);
+    activityTimer = setTimeout(flushActivity, 300);
+  }, () => {});
+}
+
+function flushActivity() {
+  const entries = activityBuffer;
+  activityBuffer = [];
+  activityWrites = activityWrites
+    .then(async () => {
+      const { activity } = await chrome.storage.local.get("activity");
+      const kept = Array.isArray(activity) ? activity : [];
+      await chrome.storage.local.set({ activity: [...kept, ...entries].slice(-ACTIVITY_MAX) });
+    })
+    .catch(() => {});
+}
 
 // ---------------------------------------------------------------------------------------------------
 // Cached state
@@ -180,6 +213,7 @@ async function captureSession(storeId, { pageLogin } = {}) {
     // session again, for example right after switching to it, does not.
     const stale = Boolean(previous?.stale) && sessionValue(previous.cookies) === sessionValue(cookies);
     sessions[key] = { login, cookies: cookies.map(pickCookie), updatedAt: Date.now(), stale };
+    trace("sign-in saved", { account: login, ...(previous ? {} : { new: true }) });
   });
 }
 
@@ -281,23 +315,40 @@ const withoutHash = (url) => url.split("#")[0];
  * mode "page":    a page finished loading and showed `pageLogin`; reload if it is the wrong one.
  * mode "click":   the content script is about to load `url` in the tab; only switch.
  */
-async function handleNavigation(tabId, url, { mode, requestId, pageLogin }) {
+// tabId -> time the tab last started loading a page. A page report received before that is about a
+// page the tab has already left.
+const loadStarts = new Map();
+const noteLoadStart = (tabId) => loadStarts.set(tabId, Date.now());
+
+async function handleNavigation(tabId, url, { mode, requestId, pageLogin, reportedAt }) {
   const settings = await getSettings();
   if (!settings.enabled) return;
   const sessions = await getSessions();
   const decision = resolveAccount(url, settings, Object.values(sessions).map((s) => s.login));
   if (!decision) return;
   const known = sessions[decision.account.toLowerCase()];
-  if (!known || known.stale) return;
+  if (!known || known.stale) {
+    trace("can't switch", { tab: tabId, mode, url, wants: decision.account, why: known ? "signed out" : "not saved" });
+    return;
+  }
 
   await enqueue(async () => {
+    if (mode === "page" && (loadStarts.get(tabId) ?? 0) > reportedAt) {
+      // For example the page that a switch restarted: it reported before the restart, and the page that
+      // replaces it reports for itself.
+      trace("outdated page report ignored", { tab: tabId, url, account: pageLogin });
+      return;
+    }
     // Read everything again: earlier switches in the queue may have changed it.
     const target = (await getSessions())[decision.account.toLowerCase()];
     if (!target || target.stale) return;
     const storeId = await storeIdForTab(tabId);
     const current = loginOf(await readSessionCookies(storeId));
     const shown = mode === "page" && pageLogin != null ? pageLogin : current;
-    if (sameLogin(shown, target.login)) return;
+    if (sameLogin(shown, target.login)) {
+      if (mode !== "request") trace("right account", { tab: tabId, mode, url, account: target.login });
+      return;
+    }
 
     if (!allowAttempt(tabId, `${target.login} ${withoutHash(url)}`)) {
       await setProblem(`Switching to ${target.login} for ${withoutHash(url)} did not work after ${MAX_ATTEMPTS} tries, so the extension stopped retrying.`);
@@ -309,20 +360,40 @@ async function handleNavigation(tabId, url, { mode, requestId, pageLogin }) {
     // Put the saved sign-in in place even when the cookies already name the account: the page then
     // showed another one, so they are out of step (for example, a response that was on its way during
     // the last switch arrived after it and set its own cookies).
+    const started = Date.now();
     await swapTo(target, storeId);
     pending.set(tabId, { expected: target.login, previous: current, storeId, at: Date.now() });
+    trace("switched", {
+      tab: tabId, mode, url, from: current, to: target.login, ...(mode === "page" ? { pageShowed: pageLogin } : {}),
+      because: decision.reason, ms: Date.now() - started,
+      then: { request: "restart load", click: "content script loads it" }[mode] ?? "reload",
+    });
     if (mode === "click") return;
 
     const responded = waitForResponse(tabId, requestId);
+    noteLoadStart(tabId);
     if (mode === "request") await chrome.tabs.update(tabId, { url });
     else await chrome.tabs.reload(tabId);
     await responded;
   });
 }
 
-async function handlePageReport(tabId, url, pageLogin) {
+/**
+ * `docStart`: when the reporting page started loading (performance.timeOrigin). `reportedAt`: when the
+ * report arrived.
+ */
+async function handlePageReport(tabId, url, pageLogin, { docStart, reportedAt }) {
   const switched = pending.get(tabId);
+  if (switched && docStart != null && docStart < switched.at) {
+    // The page that was loading when the extension switched; the page the switch loads verifies it.
+    trace("page from before the switch", { tab: tabId, url, account: pageLogin, expected: switched.expected });
+    return;
+  }
   pending.delete(tabId);
+  trace("page shows", {
+    tab: tabId, url, account: pageLogin,
+    ...(switched ? { expected: switched.expected, msAfterSwitch: Date.now() - switched.at } : {}),
+  });
 
   if (switched && Date.now() - switched.at < VERIFY_WINDOW_MS && pageLogin != null) {
     if (sameLogin(pageLogin, switched.expected)) {
@@ -331,17 +402,18 @@ async function handlePageReport(tabId, url, pageLogin) {
     }
     if (pageLogin === "") {
       // The saved session was rejected: GitHub shows the page signed out.
+      trace("saved sign-in rejected", { tab: tabId, account: switched.expected, restoring: switched.previous });
       await markStale((s) => sameLogin(s.login, switched.expected));
       await setProblem(`GitHub no longer accepts the saved sign-in of ${switched.expected}. Sign in to ${switched.expected} on github.com again.`);
       await restorePrevious(tabId, switched);
       return;
     }
   }
-  await handleNavigation(tabId, url, { mode: "page", pageLogin });
+  await handleNavigation(tabId, url, { mode: "page", pageLogin, reportedAt });
 }
 
-async function onPageLoaded(tabId, url, pageLogin) {
-  await handlePageReport(tabId, url, pageLogin);
+async function onPageLoaded(tabId, url, pageLogin, timing) {
+  await handlePageReport(tabId, url, pageLogin, timing);
   // This page is settled. If it loaded in a background tab, give the cookies back to the tab in front.
   if (!pending.has(tabId)) await followFrontTab(tabId);
 }
@@ -362,6 +434,7 @@ async function followTab(tabId) {
     if (sameLogin(current, target.login)) return;
     if (current) await captureSession(storeId);
     await swapTo(target, storeId);
+    trace("followed tab in front", { tab: tabId, url: reply.url, from: current, to: target.login });
   });
 }
 
@@ -382,6 +455,7 @@ async function restorePrevious(tabId, switched) {
     if (!previous || previous.stale) return;
     await swapTo(previous, switched.storeId);
     const responded = waitForResponse(tabId);
+    noteLoadStart(tabId);
     await chrome.tabs.reload(tabId);
     await responded;
   });
@@ -410,6 +484,8 @@ onMainFrame(chrome.webRequest?.onBeforeRequest, (details) => {
   // tabId -1: prerendering and other requests without a visible tab. Non-GET: form submissions,
   // which a restart would turn into a GET. Undefined type: can't tell a page load from a fetch.
   if (details.tabId < 0 || details.method !== "GET" || details.type !== "main_frame") return;
+  noteLoadStart(details.tabId);
+  trace("page load starts", { tab: details.tabId, url: details.url });
   handleNavigation(details.tabId, details.url, { mode: "request", requestId: details.requestId }).catch(log);
 });
 if (chrome.webRequest?.onResponseStarted) {
@@ -436,8 +512,14 @@ historyEvents?.addListener(
   { url: [{ schemes: ["https"], hostEquals: "github.com" }] },
 );
 
+// Also where webRequest is missing (Safari before 18.4), and for pages outside github.com.
+chrome.webNavigation?.onBeforeNavigate?.addListener((details) => {
+  if (details.frameId === 0) noteLoadStart(details.tabId);
+});
+
 chrome.tabs.onRemoved.addListener((tabId) => {
   pending.delete(tabId);
+  loadStarts.delete(tabId);
   attempts.delete(tabId);
 });
 
@@ -454,7 +536,10 @@ async function handleMessage(message, sender) {
       if (message.login && !message.inPage) {
         await captureSession(await storeIdForTab(sender.tab.id), { pageLogin: message.login });
       }
-      if (!message.inPage) await onPageLoaded(sender.tab.id, sender.url ?? message.url, message.login);
+      if (!message.inPage) {
+        const docStart = typeof message.docStart === "number" ? message.docStart : null;
+        await onPageLoaded(sender.tab.id, sender.url ?? message.url, message.login, { docStart, reportedAt: Date.now() });
+      }
       // Browsers with webNavigation report in-page navigation themselves.
       else if (!historyEvents) handleInPageNavigation(sender.tab.id, message.url);
       return null;
@@ -465,6 +550,7 @@ async function handleMessage(message, sender) {
     }
     case "switchForNavigation":
       if (sender.tab?.id == null || sender.frameId !== 0) return null;
+      trace("link clicked", { tab: sender.tab.id, url: String(message.url) });
       await handleNavigation(sender.tab.id, String(message.url), { mode: "click" });
       return null;
     case "currentAccount": {
@@ -476,6 +562,9 @@ async function handleMessage(message, sender) {
       await updateSessions((sessions) => {
         delete sessions[String(message.login).toLowerCase()];
       });
+      return null;
+    case "trace":
+      trace(`page: ${String(message.event)}`, { tab: sender.tab?.id, ...message.details });
       return null;
     case "clearProblem":
       await setProblem(null);
@@ -506,3 +595,10 @@ chrome.runtime.onInstalled.addListener(({ reason }) => {
   if (reason === "install") chrome.runtime.openOptionsPage().catch(log);
 });
 chrome.runtime.onStartup.addListener(() => init().catch(log));
+
+// The browser may stop the background when idle and start it again for the next event.
+trace("background started", {
+  version: chrome.runtime.getManifest().version,
+  webRequest: Boolean(chrome.webRequest?.onBeforeRequest),
+  inPageEvents: Boolean(historyEvents),
+});

@@ -117,6 +117,19 @@ code {
   margin-bottom: 8px;
 }
 
+.activity {
+  max-height: 420px;
+  margin: 0;
+  padding: 8px 10px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-subtle);
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 #try-url {
   width: 100%;
 }

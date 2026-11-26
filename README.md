@@ -83,6 +83,17 @@ follow your browser profile if you sync it.
 - **Safari** needs version 18 or later: older versions can't read or write GitHub's `HttpOnly` sign-in
   cookies. See [Safari](#safari).
 
+## Troubleshooting
+
+Turn on **Activity log** on the settings page and reproduce the problem. The log shows, per tab, when a
+GitHub page started loading, which account each page showed, every switch (from, to, why, how long it
+took, what came next) and reports it ignored. **Copy** puts it on the clipboard. It stays in the
+browser (`storage.local`, last 300 entries); turn it off when you are done.
+
+Errors also go to the background's console: Chrome `chrome://extensions` → *service worker*; Firefox
+`about:debugging` → *Inspect*; Safari: Settings → Advanced → *Show features for web developers*, then
+Develop → *Web Extension Background Content* → GitHub Auto Switch.
+
 ## Install
 
 From source, unpacked:

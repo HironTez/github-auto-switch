@@ -13,7 +13,10 @@
   const withoutHash = (url) => url.split("#")[0];
   const shownLogin = () => document.querySelector('meta[name="user-login"]')?.content ?? null;
   const send = (message) => chrome.runtime.sendMessage(message);
-  const report = (inPage) => send({ type: "page", url: location.href, login: shownLogin(), inPage }).catch(() => {});
+  // When this page started loading, so the background can tell reports of replaced pages apart.
+  const docStart = Math.round(performance.timeOrigin);
+  const report = (inPage) =>
+    send({ type: "page", url: location.href, login: shownLogin(), inPage, docStart }).catch(() => {});
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === "shownLogin") sendResponse({ login: shownLogin(), url: location.href });
@@ -64,7 +67,11 @@
 
   let rules = null; // lib/rules.js
   let state = null; // { settings, accounts: [{ login, stale }] } from the background
-  import(chrome.runtime.getURL("src/lib/rules.js")).then((module) => (rules = module), () => {});
+  const trace = (event, details) => send({ type: "trace", event, details }).catch(() => {});
+  import(chrome.runtime.getURL("src/lib/rules.js")).then(
+    (module) => (rules = module),
+    (error) => trace("rule code did not load; clicks are not switched before loading", { error: String(error) }),
+  );
   const loadState = () =>
     send({ type: "rulesState" }).then(
       (response) => (state = response?.result ?? null),
@@ -96,6 +103,7 @@
         return;
       }
       if (url.origin !== location.origin || withoutHash(url.href) === withoutHash(location.href)) return;
+      if (!rules || !state) trace("link clicked before the rules were ready", { url: url.href, rules: !!rules, state: !!state });
 
       const account = accountFor(url.href);
       if (!account || rules.sameLogin(shownLogin(), account)) return;

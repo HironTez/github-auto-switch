@@ -320,8 +320,20 @@ test("switches accounts by the rules", async (t) => {
     await waitFor(async () => (await signedInNow()) === "bob", "bob signed in again for the tab in front");
   });
 
+  await t.test("the activity log records switches when turned on", async () => {
+    await setSettings({ ...(await storage("sync", "settings")), activityLog: true });
+    assert.equal((await open("https://github.com/carol/logged")).login, "carol");
+    const activity = await waitFor(async () => {
+      const entries = (await storage("local", "activity")) ?? [];
+      return entries.some((e) => e.event === "page shows" && e.url.endsWith("/carol/logged")) && entries;
+    }, "activity recorded");
+    const switches = activity.filter((e) => e.event === "switched" && e.url.endsWith("/carol/logged"));
+    assert.deepEqual(switches.map((e) => e.to), ["carol"], "one switch, and no second one from the replaced page");
+    await setSettings({ ...(await storage("sync", "settings")), activityLog: false });
+  });
+
   await t.test("turned off: nothing switches", async () => {
     await setSettings({ ...(await storage("sync", "settings")), enabled: false });
-    assert.equal((await open("https://github.com/alice/x")).login, "bob");
+    assert.equal((await open("https://github.com/alice/x")).login, "carol");
   });
 });

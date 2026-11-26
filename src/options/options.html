@@ -92,6 +92,21 @@
         <p id="try-result" class="muted" aria-live="polite"></p>
       </section>
 
+      <section aria-labelledby="activity-title">
+        <h2 id="activity-title">Activity log</h2>
+        <p class="muted">
+          For troubleshooting: records what the extension sees and does on github.com (page addresses,
+          which account each page showed, switches and their timing). It stays in this browser. Turn it off
+          when you are done.
+        </p>
+        <div class="row">
+          <label class="toggle"><input id="activityLog" type="checkbox" /> Record activity</label>
+          <button id="activity-copy" type="button">Copy</button>
+          <button id="activity-clear" type="button">Clear</button>
+        </div>
+        <pre id="activity" class="activity" tabindex="0" aria-label="Activity log" hidden></pre>
+      </section>
+
       <section aria-labelledby="notes-title">
         <h2 id="notes-title">Good to know</h2>
         <ul class="muted notes">

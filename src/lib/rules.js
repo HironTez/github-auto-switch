@@ -13,6 +13,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   inPageNavigation: true,
   // { type: "repo" | "owner", pattern: string, account: string }
   rules: [],
+  // Record what the extension sees and does (storage.local "activity"), for troubleshooting.
+  activityLog: false,
 });
 
 // First path segments that are GitHub pages, not user or organization names.
@@ -97,6 +99,7 @@ export function normalizeSettings(raw) {
     ownContent: s.ownContent !== false,
     generalPages: s.generalPages === "keep" ? "keep" : "default",
     inPageNavigation: s.inPageNavigation !== false,
+    activityLog: s.activityLog === true,
     rules: (Array.isArray(s.rules) ? s.rules : [])
       .filter((r) => r && (r.type === "repo" || r.type === "owner"))
       .map((r) => ({

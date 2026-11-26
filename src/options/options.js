@@ -161,6 +161,7 @@ function renderGeneral() {
   $("ownContent").checked = settings.ownContent;
   $("generalPages").value = settings.generalPages;
   $("inPageNavigation").checked = settings.inPageNavigation;
+  $("activityLog").checked = settings.activityLog;
   $("defaultAccount").replaceWith(
     Object.assign(
       accountSelect(settings.defaultAccount, "none: keep the current account", (value) => {
@@ -172,7 +173,7 @@ function renderGeneral() {
   );
 }
 
-for (const id of ["enabled", "ownContent", "inPageNavigation"]) {
+for (const id of ["enabled", "ownContent", "inPageNavigation", "activityLog"]) {
   $(id).addEventListener("change", () => {
     settings[id] = $(id).checked;
     save();
@@ -213,6 +214,40 @@ function renderTry() {
 $("try-url").addEventListener("input", renderTry);
 
 // ---------------------------------------------------------------------------------------------------
+// Activity log
+
+let activityText = "";
+
+function formatEntry({ at, event, ...details }) {
+  const time = new Date(at).toLocaleTimeString(undefined, { hour12: false }) + `.${String(at % 1000).padStart(3, "0")}`;
+  const first = ["tab", "url", "account"];
+  const rank = (key) => (first.includes(key) ? first.indexOf(key) : first.length);
+  const fields = Object.entries(details)
+    .sort(([a], [b]) => rank(a) - rank(b))
+    .filter(([, value]) => value !== undefined)
+    .map(([key, value]) => `${key}=${typeof value === "string" ? value : JSON.stringify(value)}`);
+  return [time, event, ...fields].join("  ");
+}
+
+async function renderActivity() {
+  const { activity } = await chrome.storage.local.get("activity");
+  const entries = Array.isArray(activity) ? activity : [];
+  activityText = entries.map(formatEntry).join("\n");
+  const view = $("activity");
+  const atEnd = view.scrollTop + view.clientHeight >= view.scrollHeight - 4;
+  view.textContent = activityText || "Nothing recorded yet. Open some GitHub pages.";
+  view.hidden = !settings.activityLog && !entries.length;
+  if (atEnd) view.scrollTop = view.scrollHeight;
+}
+
+$("activity-copy").addEventListener("click", async () => {
+  await navigator.clipboard.writeText(activityText).catch(() => {});
+  $("activity-copy").textContent = "Copied";
+  setTimeout(() => ($("activity-copy").textContent = "Copy"), 1500);
+});
+$("activity-clear").addEventListener("click", () => chrome.storage.local.remove("activity"));
+
+// ---------------------------------------------------------------------------------------------------
 // Problems
 
 function showProblem(problem) {
@@ -227,6 +262,7 @@ $("problem-dismiss").addEventListener("click", () => sendMessage({ type: "clearP
 
 function renderAll() {
   renderGeneral();
+  renderActivity();
   renderRules();
   renderAccounts();
   renderTry();
@@ -247,6 +283,7 @@ chrome.storage.onChanged.addListener(async (changes) => {
     renderAll();
   }
   if ("status" in changes) showProblem((await loadStatus()).problem);
+  if ("activity" in changes) renderActivity();
 });
 
 [settings, sessions] = await Promise.all([loadSettings(), loadSessions()]);

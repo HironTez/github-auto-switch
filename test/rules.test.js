@@ -103,6 +103,7 @@ test("normalizeSettings tolerates missing and malformed data", () => {
     ownContent: true,
     generalPages: "default",
     inPageNavigation: true,
+    activityLog: false,
     rules: [],
   });
   const s = normalizeSettings({ enabled: false, generalPages: "weird", rules: [null, { type: "x" }, { type: "owner" }] });
