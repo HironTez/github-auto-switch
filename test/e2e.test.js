@@ -126,6 +126,8 @@ after(async () => {
 });
 
 const storage = (area, key) => worker.evaluate(([a, k]) => chrome.storage[a].get(k).then((r) => r[k]), [area, key]);
+const signedInNow = () =>
+  worker.evaluate(() => chrome.cookies.get({ url: "https://github.com/", name: "dotcom_user" }).then((c) => c?.value));
 const setSettings = (settings) => worker.evaluate((s) => chrome.storage.sync.set({ settings: s }), settings);
 
 async function waitFor(check, message, timeout = 10_000) {
@@ -283,6 +285,39 @@ test("switches accounts by the rules", async (t) => {
     const after = await storage("local", "sessions");
     assert.equal(token(after.bob), token(before.bob), "bob's saved sign-in is still bob's");
     assert.equal(token(after.carol), token(before.carol), "carol's saved sign-in is still carol's");
+  });
+
+  await t.test("a clicked link that needs another account switches before the page loads", async () => {
+    const { page, login } = await open("https://github.com/torvalds/linux");
+    assert.equal(login, "alice");
+    await page.evaluate(() => {
+      const link = Object.assign(document.createElement("a"), { href: "/carol/clicked", id: "go", textContent: "go" });
+      document.body.append(link);
+    });
+    await page.click("#go");
+    await waitFor(async () => (await page.title().catch(() => "")) === "carol /carol/clicked", "opened as carol");
+    const served = requests.filter((r) => r.path === "/carol/clicked").map((r) => r.login);
+    assert.deepEqual(served, ["carol"], "never loaded with the wrong account");
+  });
+
+  await t.test("returning to a tab puts its account back without reloading it", async () => {
+    const { page: aliceTab } = await open("https://github.com/torvalds/linux");
+    assert.equal((await open("https://github.com/bob/z")).login, "bob");
+    const loads = requests.filter((r) => r.path === "/torvalds/linux").length;
+    await aliceTab.bringToFront();
+    await waitFor(async () => (await signedInNow()) === "alice", "alice signed in again");
+    assert.equal(requests.filter((r) => r.path === "/torvalds/linux").length, loads, "no reload");
+  });
+
+  await t.test("a page loading in a background tab gives the account back to the tab in front", async () => {
+    const { page: front } = await open("https://github.com/bob/front");
+    await front.bringToFront();
+    await worker.evaluate(() => chrome.tabs.create({ url: "https://github.com/carol/background", active: false }));
+    await waitFor(
+      () => requests.some((r) => r.path === "/carol/background" && r.login === "carol"),
+      "the background tab loaded as carol",
+    );
+    await waitFor(async () => (await signedInNow()) === "bob", "bob signed in again for the tab in front");
   });
 
   await t.test("turned off: nothing switches", async () => {

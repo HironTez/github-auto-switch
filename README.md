@@ -49,10 +49,15 @@ per-visit state, which GitHub then starts anew for the account switched to.
   signed in, or you open the popup, the extension saves a copy for that account in its local storage.
 - **Switching:** when a tab starts loading a github.com page, the extension asks the rules which account
   it should use. If that account isn't the signed-in one, it puts the account's saved cookies in place
-  and restarts the load, so the page is served as the right account from the start. In-page navigation
-  (clicking links in a GitHub tab) switches and reloads too; you can turn that off.
+  and restarts the load, so the page is served as the right account from the start. A clicked link in
+  a GitHub tab that needs another account switches before the new page loads; in-page navigation that
+  needs another account switches and reloads. You can turn both off.
+- **Following the tab in front:** switching to a GitHub tab (or window) puts back the account its page
+  was opened with, without reloading it, so its links and live updates keep working as that account.
+  A page that loads in a background tab gives the account back to the tab in front once it has loaded.
 - **Checking:** the content script reads the account the loaded page shows (`<meta name="user-login">`).
-  If the page came with another account (for example, a response that was already on its way when the
+  It reports as soon as that tag arrives, before the rest of the page. If the page came with another
+  account (for example, a response that was already on its way when the
   extension switched brought the old account's cookies back), it puts the sign-in in place again and
   reloads. If GitHub rejected the saved sign-in, the extension marks the account as signed out,
   restores the previous account and shows a red `!` on its toolbar icon.
@@ -63,9 +68,12 @@ follow your browser profile if you sync it.
 
 ### Limits
 
-- **One account per profile at a time.** A switch applies to every GitHub tab in the browser profile.
-  Tabs that are already open keep what they loaded. The next page you open in them is switched back if
-  needed, so moving between tabs of different accounts reloads pages as you go.
+- **One account per profile at a time.** GitHub's cookies are shared by every tab, so the extension
+  gives them to the tab in front. While a background tab loads a page of another account, the tab in
+  front briefly runs as that account.
+- **Typed URLs and links from outside GitHub** (other apps, other sites, new tabs) may show the old
+  account first in browsers that can't hold a page load (Safari): the extension then switches and
+  reloads. Links clicked inside GitHub switch before loading.
 - **Signing out ends the saved sign-in.** *Sign out* on GitHub (or a session GitHub revokes) ends that
   account's session on GitHub's side. The extension notices and shows the account as *Signed out*.
   Sign in to it again and the extension picks it up.
@@ -123,6 +131,8 @@ test runs these fallbacks by simulating the missing APIs in Chromium, not in Saf
 
 Permissions: `cookies` (save and switch the sign-in cookies), `webRequest` and `webNavigation` (notice
 GitHub page loads and in-page navigation early), `storage`, and access to `https://github.com/*` only.
+`src/lib/rules.js` is listed as web-accessible on github.com so the content script can load it; it holds
+the matching code only, no settings or sign-ins.
 
 ## Layout
 

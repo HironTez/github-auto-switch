@@ -9,6 +9,9 @@
 //   the signed-in one, the extension puts that account's cookies in place and restarts the load.
 // - The content script reports which account the loaded page shows. If GitHub did not accept the
 //   saved session, the account is marked as signed out and the previous account is restored.
+// - A clicked link that needs another account is switched before the page loads (content script).
+// - The cookies follow the tab in front: switching to a GitHub tab puts back the account its page
+//   shows, without reloading, and so does a page finishing loading in a background tab.
 
 import { resolveAccount, sameLogin } from "./lib/rules.js";
 import { loadSessions, loadSettings, loadStatus, saveSessions } from "./lib/storage.js";
@@ -276,6 +279,7 @@ const withoutHash = (url) => url.split("#")[0];
  * mode "request": a page load is starting; restart it after switching.
  * mode "history": GitHub navigated in-page; reload after switching.
  * mode "page":    a page finished loading and showed `pageLogin`; reload if it is the wrong one.
+ * mode "click":   the content script is about to load `url` in the tab; only switch.
  */
 async function handleNavigation(tabId, url, { mode, requestId, pageLogin }) {
   const settings = await getSettings();
@@ -296,7 +300,7 @@ async function handleNavigation(tabId, url, { mode, requestId, pageLogin }) {
     if (sameLogin(shown, target.login)) return;
 
     if (!allowAttempt(tabId, `${target.login} ${withoutHash(url)}`)) {
-      await setProblem(`Switching to ${target.login} for ${withoutHash(url)} did not work twice in a row, so the extension stopped retrying.`);
+      await setProblem(`Switching to ${target.login} for ${withoutHash(url)} did not work after ${MAX_ATTEMPTS} tries, so the extension stopped retrying.`);
       return;
     }
     // Save the signed-in account first: right after signing in, GitHub redirects to a page the
@@ -307,6 +311,7 @@ async function handleNavigation(tabId, url, { mode, requestId, pageLogin }) {
     // the last switch arrived after it and set its own cookies).
     await swapTo(target, storeId);
     pending.set(tabId, { expected: target.login, previous: current, storeId, at: Date.now() });
+    if (mode === "click") return;
 
     const responded = waitForResponse(tabId, requestId);
     if (mode === "request") await chrome.tabs.update(tabId, { url });
@@ -334,6 +339,41 @@ async function handlePageReport(tabId, url, pageLogin) {
   }
   await handleNavigation(tabId, url, { mode: "page", pageLogin });
 }
+
+async function onPageLoaded(tabId, url, pageLogin) {
+  await handlePageReport(tabId, url, pageLogin);
+  // This page is settled. If it loaded in a background tab, give the cookies back to the tab in front.
+  if (!pending.has(tabId)) await followFrontTab(tabId);
+}
+
+/** Puts in place the account that `tabId`'s page shows, without reloading it. */
+async function followTab(tabId) {
+  if (pending.has(tabId) || !(await getSettings()).enabled) return;
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  if (!tab || tab.status === "loading") return; // its own page load decides
+  const reply = await chrome.tabs.sendMessage(tabId, { type: "shownLogin" }).catch(() => null);
+  if (!reply?.login) return; // not a GitHub page, or signed out
+  await enqueue(async () => {
+    if (pending.has(tabId)) return;
+    const target = (await getSessions())[reply.login.toLowerCase()];
+    if (!target || target.stale) return;
+    const storeId = await storeIdForTab(tabId);
+    const current = loginOf(await readSessionCookies(storeId));
+    if (sameLogin(current, target.login)) return;
+    if (current) await captureSession(storeId);
+    await swapTo(target, storeId);
+  });
+}
+
+async function followFrontTab(exceptTabId) {
+  const [front] = await chrome.tabs.query({ active: true, lastFocusedWindow: true }).catch(() => []);
+  if (front && front.id !== exceptTabId) await followTab(front.id);
+}
+
+chrome.tabs.onActivated.addListener(({ tabId }) => followTab(tabId).catch(log));
+chrome.windows?.onFocusChanged?.addListener((windowId) => {
+  if (windowId !== chrome.windows.WINDOW_ID_NONE) followFrontTab().catch(log);
+});
 
 async function restorePrevious(tabId, switched) {
   if (!switched.previous) return;
@@ -414,9 +454,18 @@ async function handleMessage(message, sender) {
       if (message.login && !message.inPage) {
         await captureSession(await storeIdForTab(sender.tab.id), { pageLogin: message.login });
       }
-      if (!message.inPage) await handlePageReport(sender.tab.id, sender.url ?? message.url, message.login);
+      if (!message.inPage) await onPageLoaded(sender.tab.id, sender.url ?? message.url, message.login);
       // Browsers with webNavigation report in-page navigation themselves.
       else if (!historyEvents) handleInPageNavigation(sender.tab.id, message.url);
+      return null;
+    case "rulesState": {
+      const sessions = await getSessions();
+      const accounts = Object.values(sessions).map((s) => ({ login: s.login, stale: Boolean(s.stale) }));
+      return { settings: await getSettings(), accounts };
+    }
+    case "switchForNavigation":
+      if (sender.tab?.id == null || sender.frameId !== 0) return null;
+      await handleNavigation(sender.tab.id, String(message.url), { mode: "click" });
       return null;
     case "currentAccount": {
       const storeId = message.tabId != null ? await storeIdForTab(message.tabId) : undefined;

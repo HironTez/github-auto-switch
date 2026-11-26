@@ -33,7 +33,17 @@
       "js": [
         "src/content.js"
       ],
-      "run_at": "document_end"
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "src/lib/rules.js"
+      ],
+      "matches": [
+        "https://github.com/*"
+      ]
     }
   ],
   "action": {
