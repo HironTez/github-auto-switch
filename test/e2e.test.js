@@ -5,10 +5,13 @@
 // page signed out. Chromium resolves github.com to the fake server.
 //
 // Run: npm run test:e2e   (needs `npx playwright install chromium` once)
+//
+// SAFARI=1 (npm run test:e2e:safari) runs it all again with what Safari before 18.4 lacks taken away
+// (webRequest, webNavigation.onHistoryStateUpdated), so the fallbacks are tested. Still Chromium.
 
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,7 +20,26 @@ import { fileURLToPath } from "node:url";
 import forge from "node-forge";
 import { chromium } from "playwright";
 
-const EXTENSION = fileURLToPath(new URL("..", import.meta.url));
+const SOURCE = fileURLToPath(new URL("..", import.meta.url));
+const SAFARI = process.env.SAFARI === "1";
+
+/** A copy of the extension whose background sees no webRequest and no onHistoryStateUpdated. */
+function safariLikeCopy() {
+  const dir = mkdtempSync(join(tmpdir(), "gh-auto-switch-safari-"));
+  for (const entry of ["manifest.json", "icons", "src"]) cpSync(join(SOURCE, entry), join(dir, entry), { recursive: true });
+  writeFileSync(
+    join(dir, "src/safari-like.js"),
+    `Object.defineProperty(chrome, "webRequest", { value: undefined, configurable: true });
+Object.defineProperty(chrome.webNavigation, "onHistoryStateUpdated", { value: undefined, configurable: true });
+chrome.storage.local.set({ testApis: { webRequest: !!chrome.webRequest, history: !!chrome.webNavigation.onHistoryStateUpdated } });
+`,
+  );
+  const background = join(dir, "src/background.js");
+  writeFileSync(background, `import "./safari-like.js";\n${readFileSync(background, "utf8")}`);
+  return dir;
+}
+
+const EXTENSION = SAFARI ? safariLikeCopy() : SOURCE;
 
 // ---------------------------------------------------------------------------------------------------
 // Fake github.com
@@ -86,13 +108,15 @@ function handle(req, res) {
   if (token && !current) headers["Set-Cookie"] = signOutCookies;
   requests.push({ path: url.pathname, login: current });
   // A request still under way when the tab comes to the front.
-  const delay = url.pathname.endsWith("/slow") ? 1500 : 0;
+  const delay = url.pathname.endsWith("/slow") ? 1500 : url.pathname.endsWith("/stall") ? 6000 : 0;
+  // A page that takes long to finish loading, like GitHub's with its many parts.
+  const extra = url.pathname.endsWith("/heavy") ? `<img src="${url.pathname}/stall">` : "";
   setTimeout(() => {
     res.writeHead(200, headers);
     res.end(`<!doctype html><html><head>
 <meta name="user-login" content="${current}">
 <title>${current || "(signed out)"} ${url.pathname}</title>
-</head><body>${current || "signed out"} at ${url.pathname}</body></html>`);
+</head><body>${current || "signed out"} at ${url.pathname}${extra}</body></html>`);
   }, delay);
 }
 
@@ -127,6 +151,7 @@ after(async () => {
   await context?.close();
   server?.close();
   if (profile) rmSync(profile, { recursive: true, force: true });
+  if (EXTENSION !== SOURCE) rmSync(EXTENSION, { recursive: true, force: true });
 });
 
 const storage = (area, key) => worker.evaluate(([a, k]) => chrome.storage[a].get(k).then((r) => r[k]), [area, key]);
@@ -169,6 +194,11 @@ async function signIn(login) {
 // ---------------------------------------------------------------------------------------------------
 
 test("switches accounts by the rules", async (t) => {
+  if (SAFARI) {
+    // Right after start, the worker may not have its extension APIs yet.
+    const apis = await waitFor(() => storage("local", "testApis").catch(() => null), "Safari-like copy loaded");
+    assert.deepEqual(apis, { webRequest: false, history: false }, "the APIs the extension sees");
+  }
   for (const login of ["alice", "bob", "carol"]) await signIn(login);
   const remembered = await storage("local", "sessions");
   assert.deepEqual(Object.keys(remembered).sort(), ["alice", "bob", "carol"]);
@@ -342,6 +372,32 @@ test("switches accounts by the rules", async (t) => {
       () => requests.filter((r) => r.path === "/torvalds/focus" && r.login === "alice").length > loads,
       "reloaded as alice",
     );
+  });
+
+  await t.test("moving to another tab while a switched page is still loading puts that tab's account back at once", async () => {
+    const { page: aliceTab, login } = await open("https://github.com/torvalds/quick");
+    assert.equal(login, "alice");
+    const carolTab = await context.newPage();
+    carolTab.goto("https://github.com/carol/heavy").catch(() => {});
+    await waitFor(() => requests.some((r) => r.path === "/carol/heavy" && r.login === "carol"), "carol's page served");
+    await aliceTab.bringToFront(); // while carol's page is still loading
+    await waitFor(async () => (await signedInNow()) === "alice", "alice signed in again", 2000);
+    await carolTab.close();
+  });
+
+  await t.test("moving to another tab while a switched page waits for its response puts that tab's account back at once", async () => {
+    const { page: aliceTab, login } = await open("https://github.com/torvalds/quick2");
+    assert.equal(login, "alice");
+    const carolTab = await context.newPage();
+    carolTab.goto("https://github.com/carol/late/stall").catch(() => {});
+    await waitFor(
+      () => requests.some((r) => r.path === "/carol/late/stall" && r.login === "carol"),
+      "carol's page requested",
+      15_000,
+    );
+    await aliceTab.bringToFront(); // before carol's page has answered
+    await waitFor(async () => (await signedInNow()) === "alice", "alice signed in again", 2000);
+    await carolTab.close();
   });
 
   await t.test("a page loading in a background tab doesn't switch until it comes to the front", async () => {

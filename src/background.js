@@ -10,8 +10,8 @@
 // - The content script reports which account the loaded page shows. If GitHub did not accept the
 //   saved session, the account is marked as signed out and the previous account is restored.
 // - A clicked link that needs another account is switched before the page loads (content script).
-// - The cookies follow the tab in front: switching to a GitHub tab puts back the account its page
-//   shows, without reloading, and so does a page finishing loading in a background tab.
+// - Only the tab in front switches. Switching to a GitHub tab puts back the account its page shows,
+//   without reloading, or reloads it if it loaded or sent requests with another account meanwhile.
 
 import { resolveAccount, sameLogin } from "./lib/rules.js";
 import { loadSessions, loadSettings, loadStatus, saveSessions } from "./lib/storage.js";
@@ -456,6 +456,8 @@ async function handlePageReport(tabId, url, pageLogin, { docStart, reportedAt })
     return;
   }
   pending.delete(tabId);
+  // The page's response has arrived (where webRequest can't tell, the wait would last until it loaded).
+  responseWaiters.get(tabId)?.done();
   trace("page shows", {
     tab: tabId, url, account: pageLogin,
     ...(switched ? { expected: switched.expected, msAfterSwitch: Date.now() - switched.at } : {}),
@@ -524,10 +526,27 @@ const RECHECK_MS = 3000;
 
 async function followFrontTab() {
   const [front] = await chrome.tabs.query({ active: true, lastFocusedWindow: true }).catch(() => []);
-  if (front) await followTab(front.id);
+  if (!front) return;
+  stopWaitingExcept(front.id);
+  await followTab(front.id);
 }
 
-chrome.tabs.onActivated.addListener(({ tabId }) => followTab(tabId).catch(log));
+/**
+ * Another tab came to the front: stop holding later switches for a page that a switch is loading in
+ * another tab. That page gets checked when it reports (and, in the background, is left as it loads).
+ */
+function stopWaitingExcept(tabId) {
+  for (const [id, waiter] of responseWaiters) {
+    if (id === tabId) continue;
+    trace("tab left the front while its switched page loaded", { tab: id, front: tabId });
+    waiter.done();
+  }
+}
+
+chrome.tabs.onActivated.addListener(({ tabId }) => {
+  stopWaitingExcept(tabId);
+  followTab(tabId).catch(log);
+});
 chrome.windows?.onFocusChanged?.addListener((windowId) => {
   if (windowId !== chrome.windows.WINDOW_ID_NONE) followFrontTab().catch(log);
 });

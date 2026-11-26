@@ -7,6 +7,7 @@
   "scripts": {
     "test": "node --test test/rules.test.js",
     "test:e2e": "node --test test/e2e.test.js",
+    "test:e2e:safari": "SAFARI=1 node --test test/e2e.test.js",
     "lint": "web-ext lint",
     "build": "web-ext build --overwrite-dest",
     "icons": "node scripts/make-icons.mjs",

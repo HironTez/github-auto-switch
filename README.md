@@ -62,6 +62,8 @@ per-visit state, which GitHub then starts anew for the account switched to.
     content script notes when the page's requests started (resource timing); the background notes when
     the signed-in account changed. A second check a few seconds later catches requests that were still
     under way when you switched to the tab.
+
+  Switching to another tab never waits for a page that a switch is still loading in the tab you left.
 - **Checking:** the content script reads the account the loaded page shows (`<meta name="user-login">`).
   It reports as soon as that tag arrives, before the rest of the page. If the page came with another
   account (for example, a response that was already on its way when the
@@ -145,8 +147,8 @@ How it differs from the other browsers (per MDN's compatibility data; not tested
 | 18.4 and later | Works like the other browsers: switches before the page loads. |
 
 In-page navigation is reported by the content script, because Safari has no
-`webNavigation.onHistoryStateUpdated`. The toolbar badge shows `!` without its red background. The end-to-end
-test runs these fallbacks by simulating the missing APIs in Chromium, not in Safari itself.
+`webNavigation.onHistoryStateUpdated`. The toolbar badge shows `!` without its red background. `npm run test:e2e:safari`
+runs these fallbacks by taking the missing APIs away in Chromium, not in Safari itself.
 
 Permissions: `cookies` (save and switch the sign-in cookies), `webRequest` and `webNavigation` (notice
 GitHub page loads and in-page navigation early), `storage`, and access to `https://github.com/*` only.
@@ -177,6 +179,7 @@ code is plain ES modules, so there is no build step.
 npm install
 npm test                # rule tests (node --test)
 npm run test:e2e        # the extension in Chromium against a fake github.com
+npm run test:e2e:safari # the same, with the APIs Safari before 18.4 lacks taken away
 npm run lint            # web-ext lint (Firefox validator)
 npm run build           # zip into web-ext-artifacts/
 npm run start:firefox   # launch Firefox with the extension
