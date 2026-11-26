@@ -10,15 +10,18 @@ For example:
 - `my-work` for every repository of the `acme` organization,
 - `client-bot` for `acme/deploy-*`.
 
-One Manifest V3 codebase, no build step, for Chrome, Edge, Brave, Opera, Firefox and Safari.
+One Manifest V3 codebase for Chrome, Edge, Brave, Opera, Vivaldi, Firefox and Safari. The build only copies files
+and trims the manifest per browser.
 
 ## Setup
 
-1. Install the extension (see [Install](#install)). Its settings page opens.
+[INSTALL.md](INSTALL.md) explains how to build the extension for each browser, install it and configure
+it. In short:
+
+1. `npm install && npm run build`, then install the package from `dist/` for your browser.
 2. Open github.com once with each of your accounts. If you already use GitHub's account switcher
-   (profile menu → *Switch account*), switching to each account once is enough; otherwise add them
-   there with *Add account*, which keeps the other accounts signed in. The extension remembers every
-   account a GitHub page is opened with (and the signed-in one whenever you open its popup).
+   (profile menu → *Switch account*), switching to each account once is enough. The extension
+   remembers every account a GitHub page is opened with.
 3. On the settings page, set your rules.
 
 ## Rules
@@ -80,7 +83,7 @@ follow your browser profile if you sync it.
 - **One account per profile at a time.** GitHub's cookies are shared by every tab, and an extension
   can't give a single request other cookies, so tabs of different accounts can't run side by side. The
   extension gives the account to the tab in front, and reloads a tab on return when needed (above).
-  For accounts open side by side, use a browser profile (or Firefox container) per account.
+  For accounts open side by side, use a browser profile per account, with the extension in each.
 - **Typed URLs and links from outside GitHub** (other apps, other sites, new tabs) may show the old
   account first in browsers that can't hold a page load (Safari): the extension then switches and
   reloads. Links clicked inside GitHub switch before loading.
@@ -88,8 +91,11 @@ follow your browser profile if you sync it.
   account's session on GitHub's side. The extension notices and shows the account as *Signed out*.
   Sign in to it again and the extension picks it up.
 - **Form submissions are never interrupted.** Only page loads (GET) are switched.
-- **Private windows and Firefox containers** each have their own cookies. Switching works in them too,
-  but accounts are remembered from wherever you signed in to them.
+- **Private windows and Firefox containers** each have their own cookies. Where the extension may run
+  in them (Chrome: *Allow in Incognito*; Firefox: *Run in Private Windows*), it switches their cookies
+  with the same saved sign-ins: an account saved in a normal window is used in a private window or
+  container too, and the other way round. Signing out there (or GitHub ending that session) ends the
+  sign-in everywhere. To keep accounts apart, use browser profiles instead.
 - **Safari** needs version 18 or later: older versions can't read or write GitHub's `HttpOnly` sign-in
   cookies. See [Safari](#safari).
 
@@ -104,41 +110,11 @@ Errors also go to the background's console: Chrome `chrome://extensions` → *se
 `about:debugging` → *Inspect*; Safari: Settings → Advanced → *Show features for web developers*, then
 Develop → *Web Extension Background Content* → GitHub Auto Switch.
 
-## Install
+## Safari
 
-From source, unpacked:
-
-- **Chrome / Edge / Brave / Opera:** `chrome://extensions` → Developer mode → *Load unpacked* → this
-  directory.
-- **Firefox (121+):** `about:debugging#/runtime/this-firefox` → *Load Temporary Add-on* →
-  `manifest.json`. Firefox before 127 doesn't grant site access at install: click **Allow access** in
-  the popup or on the settings page.
-- **Safari:** see [Safari](#safari).
-
-### Safari
-
-Safari runs the same code, but needs a Mac with Xcode to package it as an app:
-
-1. Install Xcode (the full app; the Command Line Tools alone don't include the converter), then point
-   the tools at it: `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer`.
-   Convert a clean copy of the extension, not the repository (which holds `node_modules` and tests):
-
-   ```sh
-   rm -rf build && mkdir -p build/extension
-   cp -R manifest.json icons src build/extension/
-   xcrun safari-web-extension-converter build/extension \
-     --app-name "GitHub Auto Switch" --project-location build/xcode --macos-only --copy-resources
-   ```
-
-   Build and run the generated project in Xcode. For your own Mac, sign both targets with your Apple
-   ID's personal team; publishing on the App Store needs a paid Apple Developer account. After
-   changing the extension, convert again and rebuild.
-2. Without signing: Safari → Settings → Advanced → *Show features for web developers*, then Develop →
-   *Allow Unsigned Extensions* (Safari turns this off again when it quits).
-3. Enable the extension in Safari → Settings → Extensions, and allow it on github.com (toolbar button
-   → *Always Allow on This Website*).
-
-How it differs from the other browsers (per MDN's compatibility data; not tested on a real Safari):
+The same code runs in Safari. Packaging it as a Mac app needs Xcode; see
+[INSTALL.md](INSTALL.md#safari-macos). How Safari differs from the other browsers, per MDN's
+compatibility data (tested by simulating the missing APIs in Chromium, not in Safari itself):
 
 | Safari | Behaviour |
 |---|---|
@@ -147,51 +123,77 @@ How it differs from the other browsers (per MDN's compatibility data; not tested
 | 18.4 and later | Works like the other browsers: switches before the page loads. |
 
 In-page navigation is reported by the content script, because Safari has no
-`webNavigation.onHistoryStateUpdated`. The toolbar badge shows `!` without its red background. `npm run test:e2e:safari`
-runs these fallbacks by taking the missing APIs away in Chromium, not in Safari itself.
+`webNavigation.onHistoryStateUpdated`. The toolbar badge shows `!` without its red background.
 
-Permissions: `cookies` (save and switch the sign-in cookies), `webRequest` and `webNavigation` (notice
-GitHub page loads and in-page navigation early), `storage`, and access to `https://github.com/*` only.
+## Permissions
+
+`cookies` (save and switch the sign-in cookies), `webRequest` and `webNavigation` (notice GitHub page
+loads and in-page navigation early), `storage`, and access to `https://github.com/*` only.
 `src/lib/rules.js` is listed as web-accessible on github.com so the content script can load it; it holds
 the matching code only, no settings or sign-ins.
+
+Saved sign-ins (GitHub's session cookies) are kept unencrypted in `storage.local`, a plain file in the
+browser profile. Chrome, Edge and the other Chromium browsers encrypt their own cookie store with a key
+from the system keychain; Safari keeps its cookies inside its own sandbox; Firefox stores cookies
+unencrypted too. So any program running as you, and any copy or backup of the profile folder, can read
+every saved account's sign-in, without the keychain prompt that would guard the browser's own cookies.
+Browsers give extensions no such key. Use **Forget** for accounts you no longer need.
+
+GitHub's own scripts can't reach the saved sign-ins: the content script runs apart from the page. Code
+that took over the browser's github.com process could, through the content script's access to the
+extension's storage, read and change the saved sign-ins, and so make the extension sign you in to an
+account of its choosing. Content scripts may send the background only what they need: they report
+the pages they run in, read the settings and the names of the saved accounts (to tell which account a
+link needs), and ask for a switch before a clicked link loads, which signs the whole profile in to the
+account the rules choose for that link. Every other message (reading the signed-in account, removing
+accounts, clearing problems) is accepted from the popup and the settings page only.
+
+A page load that needs another account is restarted by the extension after switching. GitHub then sees
+a navigation the browser started itself, as if typed in the address bar, also when a link on another
+site started it. A link on another site can therefore open any GitHub page (a GET request) signed in
+as the account the rules pick for it; it could do so with the account already signed in before.
 
 ## Layout
 
 | Path | What |
 |---|---|
-| `manifest.json` | Shared manifest. `background` lists both `service_worker` (Chromium, Safari) and `scripts` (Firefox); each browser uses the key it supports. |
+| `manifest.json` | Shared manifest. `background` lists both `service_worker` (Chromium, Safari) and `scripts` (Firefox); the build keeps the one each browser uses. |
+| `src/background.js` | Background entry: registers every listener. |
+| `src/background/accounts.js` | Remembers accounts (saved sign-ins), notices signed-out ones. |
+| `src/background/cookies.js` | Reads GitHub's sign-in cookies and puts a saved sign-in in place. |
+| `src/background/switching.js` | Switches for page loads, clicks and in-page navigation; checks the page that arrives. |
+| `src/background/front.js` | Puts back a tab's account when it comes to the front, or reloads it. |
+| `src/background/session-store.js` | Values the background keeps across its own restarts (storage.session). |
+| `src/background/history.js` | When the signed-in account changed, to tell which requests went out as which account. |
+| `src/background/messages.js` | Messages from the content script, popup and settings page. |
+| `src/background/state.js`, `log.js`, `problems.js` | Cached settings and sign-ins, activity log, toolbar problems. |
+| `src/content.js` | Reports which account a page shows and when it sent requests; switches before clicked links load. |
 | `src/lib/rules.js` | URL classification and rule matching. Pure, no browser APIs. |
-| `src/lib/storage.js` | Storage layout: settings, saved sign-ins, status. |
-| `src/background.js` | Remembers accounts, switches, checks the result. |
-| `src/content.js` | Reports which account a loaded page shows and when it sent requests; switches before clicked links load. |
-| `src/options/` | Settings page: accounts, rules, URL tester. |
-| `src/popup/` | Toolbar popup: on/off, current account, what this tab uses. |
-| `src/ui/` | Styles and helpers shared by the popup and settings page. |
+| `src/lib/storage.js` | Storage layout: settings, saved sign-ins, status (and the other keys). |
+| `src/options/`, `src/popup/`, `src/ui/` | Settings page, toolbar popup, and what they share. |
 | `icons/` | Generated by `scripts/make-icons.mjs` (`npm run icons`). |
-| `test/` | Unit tests for the rules; end-to-end test with Chromium and a fake github.com. |
+| `scripts/build.mjs`, `scripts/targets.mjs` | Builds the per-browser packages in `dist/` (`npm run build`). |
+| `test/` | Unit tests (rules, build, parts of the background); end-to-end test with Chromium and a fake github.com. |
 
 Code uses the `chrome.*` namespace, which all target browsers support with promises in MV3. Extension
-code is plain ES modules, so there is no build step.
+code is plain ES modules; the build only copies files and trims the manifest.
 
 ## Development
 
 ```sh
 npm install
-npm test                # rule tests (node --test)
-npm run test:e2e        # the extension in Chromium against a fake github.com
-npm run test:e2e:safari # the same, with the APIs Safari before 18.4 lacks taken away
-npm run lint            # web-ext lint (Firefox validator)
-npm run build           # zip into web-ext-artifacts/
-npm run start:firefox   # launch Firefox with the extension
-npm run start:chromium  # launch Chromium with the extension
+npm test                 # unit tests (node --test)
+npm run test:e2e         # the extension in Chromium against a fake github.com
+npm run test:e2e:safari  # the same, with the APIs Safari before 18.4 lacks taken away
+npm run test:e2e:dist    # the same, against the built dist/chromium package
+npm run lint             # build and validate the Firefox package (web-ext lint)
+npm run build            # packages for every browser in dist/ (see INSTALL.md)
+npm run start:firefox    # launch Firefox with the extension from the source tree
+npm run start:chromium   # launch Chromium with the extension from the source tree
 ```
 
-`npm run test:e2e` needs Playwright's Chromium (`npx playwright install chromium`). It runs a local HTTPS
-server that behaves like github.com where it matters (sign-in cookies, `user-login` meta tag, revoked
-sessions), makes Chromium resolve `github.com` to it, and checks every rule kind, in-page navigation,
-recovery from a revoked session, and signing in to a new account.
-
-## Publishing
-
-The zip from `npm run build` is uploaded to the Chrome Web Store, Edge Add-ons, Opera Add-ons and
-addons.mozilla.org. Safari needs the converted Xcode project, submitted through App Store Connect.
+The end-to-end tests need Playwright's Chromium (`npx playwright install chromium`). They run a local
+HTTPS server that behaves like github.com where it matters (sign-in cookies, `user-login` meta tag,
+revoked sessions), make Chromium resolve `github.com` to it, and check every rule kind, in-page
+navigation, clicked links, tabs coming to the front, recovery from a revoked session, and signing in to
+a new account.

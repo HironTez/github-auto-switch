@@ -20,7 +20,10 @@ import { fileURLToPath } from "node:url";
 import forge from "node-forge";
 import { chromium } from "playwright";
 
-const SOURCE = fileURLToPath(new URL("..", import.meta.url));
+// EXTENSION_DIR: test that copy instead of the source tree (npm run test:e2e:dist tests dist/chromium).
+const SOURCE = process.env.EXTENSION_DIR
+  ? fileURLToPath(new URL(`../${process.env.EXTENSION_DIR}/`, import.meta.url))
+  : fileURLToPath(new URL("..", import.meta.url));
 const SAFARI = process.env.SAFARI === "1";
 
 /** A copy of the extension whose background sees no webRequest and no onHistoryStateUpdated. */
@@ -125,7 +128,7 @@ function handle(req, res) {
 
 let server;
 let context;
-let worker;
+let worker; // where the tests call extension APIs: the background, or an extension page once it restarted
 let profile;
 
 before(async () => {
@@ -158,6 +161,10 @@ const storage = (area, key) => worker.evaluate(([a, k]) => chrome.storage[a].get
 const signedInNow = () =>
   worker.evaluate(() => chrome.cookies.get({ url: "https://github.com/", name: "dotcom_user" }).then((c) => c?.value));
 const setSettings = (settings) => worker.evaluate((s) => chrome.storage.sync.set({ settings: s }), settings);
+
+/** Whether a service worker answers (one that the browser stopped never does). */
+const responds = (w) =>
+  Promise.race([w.evaluate(() => true), new Promise((resolve) => setTimeout(resolve, 1000, false))]).catch(() => false);
 
 async function waitFor(check, message, timeout = 10_000) {
   const end = Date.now() + timeout;
@@ -420,6 +427,107 @@ test("switches accounts by the rules", async (t) => {
       "reloaded as carol once in front",
     );
     await waitFor(async () => (await signedInNow()) === "carol", "carol signed in");
+  });
+
+  await t.test("closing a tab whose switched page is still on its way doesn't hold the next switch", async () => {
+    const stalled = await context.newPage();
+    stalled.goto("https://github.com/carol/closed/stall").catch(() => {});
+    await waitFor(
+      () => requests.some((r) => r.path === "/carol/closed/stall" && r.login === "carol"),
+      "carol's page requested",
+    );
+    await stalled.close(); // its response is 6 seconds away
+    const started = Date.now();
+    assert.equal((await open("https://github.com/bob/after-close")).login, "bob");
+    assert.ok(Date.now() - started < 4000, `took ${Date.now() - started} ms`);
+  });
+
+  await t.test("a tab that comes to the front while its switch is under way gets its account once it loads", async () => {
+    const { page: aliceTab } = await open("https://github.com/torvalds/pending");
+    const carolTab = await context.newPage();
+    carolTab.goto("https://github.com/carol/pending/slow").catch(() => {});
+    await waitFor(
+      () => requests.some((r) => r.path === "/carol/pending/slow" && r.login === "carol"),
+      "carol's page requested",
+    );
+    await aliceTab.bringToFront();
+    await waitFor(async () => (await signedInNow()) === "alice", "alice signed in for the tab in front", 2000);
+    await carolTab.bringToFront(); // its page is still on its way
+    await waitFor(async () => (await carolTab.title().catch(() => "")).startsWith("carol "), "carol's page arrived");
+    await waitFor(async () => (await signedInNow()) === "carol", "carol signed in again", 3000);
+    await carolTab.close();
+    await aliceTab.close();
+  });
+
+  await t.test("a background tab that comes to the front while it still loads is switched", async () => {
+    const { page: front } = await open("https://github.com/bob/front2");
+    await front.bringToFront();
+    // The page reports at once, but loading goes on (an image that takes 6 seconds).
+    const tabId = await worker.evaluate(
+      async () => (await chrome.tabs.create({ url: "https://github.com/carol/still-loading/heavy", active: false })).id,
+    );
+    await waitFor(
+      () => requests.some((r) => r.path === "/carol/still-loading/heavy" && r.login === "bob"),
+      "the background tab loaded as bob",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 1000)); // its report arrives while in the background
+    assert.equal(await worker.evaluate(async (id) => (await chrome.tabs.get(id)).status, tabId), "loading");
+    await worker.evaluate((id) => chrome.tabs.update(id, { active: true }), tabId);
+    await waitFor(
+      () => requests.some((r) => r.path === "/carol/still-loading/heavy" && r.login === "carol"),
+      "reloaded as carol once in front",
+    );
+    await worker.evaluate((id) => chrome.tabs.remove(id), tabId);
+  });
+
+  await t.test("a sign-in rejected after its tab left the front: the previous account comes back with the tab", async () => {
+    const { page: aliceTab } = await open("https://github.com/torvalds/rejected");
+    assert.equal((await open("https://github.com/carol/rejected")).login, "carol");
+    await (await context.newPage()).goto("https://github.com/__revoke/bob");
+    const bobTab = await context.newPage();
+    bobTab.goto("https://github.com/bob/rejected/slow").catch(() => {});
+    await waitFor(() => requests.some((r) => r.path === "/bob/rejected/slow" && r.login === ""), "bob's revoked session sent");
+    await aliceTab.bringToFront(); // before bob's page has answered
+    await waitFor(async () => (await bobTab.title().catch(() => "")) === "(signed out) /bob/rejected/slow", "bob's page signed out");
+    await waitFor(async () => (await storage("local", "sessions")).bob.stale, "bob marked as signed out");
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await bobTab.bringToFront();
+    await waitFor(async () => (await bobTab.title().catch(() => "")) === "carol /bob/rejected/slow", "reloaded as carol, signed in before");
+    await bobTab.close();
+    await aliceTab.close();
+
+    // GitHub's answer to bob's dead session reached the browser after alice was back, and ended her
+    // sign-in in the browser too: sign in to both again.
+    for (const login of ["alice", "bob"]) {
+      await signIn(login);
+      await waitFor(async () => (await storage("local", "sessions"))[login].stale === false, `${login} ready again`);
+    }
+  });
+
+  await t.test("a background tab is still switched when it comes to the front after the browser stopped the background", async () => {
+    const { page: front } = await open("https://github.com/bob/front3");
+    await front.bringToFront();
+    const url = "https://github.com/carol/after-restart";
+    await worker.evaluate((u) => chrome.tabs.create({ url: u, active: false }), url);
+    await waitFor(() => requests.some((r) => r.path === "/carol/after-restart" && r.login === "bob"), "loaded as bob");
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+
+    const cdp = await context.newCDPSession(front);
+    await cdp.send("ServiceWorker.enable");
+    await cdp.send("ServiceWorker.stopAllWorkers");
+    await cdp.detach();
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    const stopped = worker;
+    assert.equal(await responds(stopped), false, "the background stopped");
+    const tab = context.pages().find((p) => p.url() === url);
+    await tab.bringToFront(); // wakes the background
+    await waitFor(() => requests.some((r) => r.path === "/carol/after-restart" && r.login === "carol"), "reloaded as carol");
+    await tab.close();
+    // Playwright doesn't attach to the restarted worker; the extension's own page has the same APIs.
+    const extensionPage = await context.newPage();
+    await extensionPage.goto(new URL("/src/options/options.html", stopped.url()).href);
+    worker = extensionPage;
   });
 
   await t.test("the activity log records switches when turned on", async () => {

@@ -4,6 +4,9 @@
 // storage.local "sessions": { [login lowercased]: { login, cookies, updatedAt, stale } }
 //                           Session cookies never leave this device.
 // storage.local "status":   { problem: string | null, at: number }
+// storage.local "activity": the activity log, when turned on (background/log.js)
+// storage.session "accountHistory", "skippedTabs": the background's memory across restarts of it
+//                           (background/history.js, background/switching.js)
 
 import { normalizeSettings } from "./rules.js";
 
