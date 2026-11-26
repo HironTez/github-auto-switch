@@ -1,0 +1,140 @@
+main {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 24px 16px 48px;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+header h1 {
+  flex: 1;
+  font-size: 22px;
+}
+
+section {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+h2 {
+  font-size: 17px;
+}
+
+h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+p {
+  margin: 4px 0 12px;
+}
+
+code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--bg-subtle);
+  font-size: 13px;
+}
+
+.accounts {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.accounts:empty {
+  display: none;
+}
+
+.accounts li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 8px 12px;
+}
+
+.accounts li + li {
+  border-top: 1px solid var(--border);
+}
+
+.accounts .spacer {
+  flex: 1;
+}
+
+.empty {
+  padding: 12px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+}
+
+.steps {
+  margin: 0 0 16px;
+  padding-left: 20px;
+}
+
+.steps > li {
+  margin-bottom: 16px;
+  padding-left: 4px;
+}
+
+.steps > li::marker {
+  color: var(--fg-muted);
+  font-weight: 600;
+}
+
+.rules {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.rule {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 12rem) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.rule .arrow {
+  color: var(--fg-muted);
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin-bottom: 8px;
+}
+
+#try-url {
+  width: 100%;
+}
+
+.notes {
+  padding-left: 20px;
+}
+
+@media (max-width: 520px) {
+  .rule {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .rule input {
+    grid-column: 1 / -1;
+  }
+
+  .rule .arrow {
+    display: none;
+  }
+}

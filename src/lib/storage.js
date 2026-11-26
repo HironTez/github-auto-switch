@@ -1,0 +1,40 @@
+// Storage layout shared by the background, popup and options pages.
+//
+// storage.sync  "settings": rules and options (small, follows the user's browser profile sync)
+// storage.local "sessions": { [login lowercased]: { login, cookies, updatedAt, stale } }
+//                           Session cookies never leave this device.
+// storage.local "status":   { problem: string | null, at: number }
+
+import { normalizeSettings } from "./rules.js";
+
+async function syncOrLocal(op) {
+  try {
+    return await op(chrome.storage.sync);
+  } catch {
+    // Sync storage can be unavailable (disabled by policy, some Safari setups).
+    return op(chrome.storage.local);
+  }
+}
+
+export async function loadSettings() {
+  const { settings } = await syncOrLocal((area) => area.get("settings"));
+  return normalizeSettings(settings);
+}
+
+export function saveSettings(settings) {
+  return syncOrLocal((area) => area.set({ settings: normalizeSettings(settings) }));
+}
+
+export async function loadSessions() {
+  const { sessions } = await chrome.storage.local.get("sessions");
+  return sessions && typeof sessions === "object" ? sessions : {};
+}
+
+export function saveSessions(sessions) {
+  return chrome.storage.local.set({ sessions });
+}
+
+export async function loadStatus() {
+  const { status } = await chrome.storage.local.get("status");
+  return status ?? { problem: null, at: 0 };
+}

@@ -2,14 +2,39 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
+    <link rel="stylesheet" href="../ui/ui.css" />
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
-    <h1>GitHub Auto Switch</h1>
-    <label>
-      <input id="enabled" type="checkbox" />
-      Enabled
-    </label>
-    <script src="popup.js"></script>
+    <header>
+      <h1>GitHub Auto Switch</h1>
+      <label class="toggle"><input id="enabled" type="checkbox" /> On</label>
+    </header>
+
+    <div id="access" class="problem" hidden>
+      GitHub Auto Switch needs access to github.com to switch accounts.
+      <button id="access-grant" class="link" type="button">Allow access</button>
+    </div>
+
+    <div id="problem" class="problem" hidden>
+      <span id="problem-text"></span>
+      <button id="problem-dismiss" class="link" type="button">Dismiss</button>
+    </div>
+
+    <dl>
+      <dt>Signed in now</dt>
+      <dd id="current" class="muted">…</dd>
+      <dt>This tab</dt>
+      <dd id="this-page" class="muted">…</dd>
+    </dl>
+
+    <h2>Accounts</h2>
+    <ul id="accounts"></ul>
+    <p id="no-accounts" class="muted" hidden>
+      None yet. Sign in to each of your accounts on github.com once and they appear here.
+    </p>
+
+    <button id="open-options" class="primary" type="button">Rules and accounts</button>
+    <script type="module" src="popup.js"></script>
   </body>
 </html>

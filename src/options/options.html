@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>GitHub Auto Switch</title>
+    <link rel="stylesheet" href="../ui/ui.css" />
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <img src="../../icons/icon-48.png" alt="" width="32" height="32" />
+        <h1>GitHub Auto Switch</h1>
+        <label class="toggle"><input id="enabled" type="checkbox" /> Enabled</label>
+      </header>
+
+      <div id="access" class="problem" hidden>
+        GitHub Auto Switch needs access to github.com to switch accounts.
+        <button id="access-grant" class="link" type="button">Allow access</button>
+      </div>
+
+      <div id="problem" class="problem" hidden>
+        <span id="problem-text"></span>
+        <button id="problem-dismiss" class="link" type="button">Dismiss</button>
+      </div>
+
+      <section aria-labelledby="accounts-title">
+        <h2 id="accounts-title">Accounts</h2>
+        <p class="muted">
+          Sign in to each of your accounts on github.com once. GitHub’s <strong>Add account</strong> in the
+          profile menu works well: it keeps the other accounts signed in. The extension remembers every
+          account you sign in to and lists it here.
+        </p>
+        <ul id="accounts" class="accounts"></ul>
+        <p id="no-accounts" class="empty" hidden>
+          No accounts yet. Open <a href="https://github.com/login" target="_blank" rel="noopener">github.com</a>
+          and sign in.
+        </p>
+      </section>
+
+      <section aria-labelledby="rules-title">
+        <h2 id="rules-title">Which account opens a page</h2>
+        <p class="muted">
+          Checked from top to bottom; the first match wins. Patterns ignore case, and <code>*</code> matches
+          any part of a name, for example <code>acme/*-infra</code>.
+        </p>
+
+        <ol class="steps">
+          <li>
+            <h3>Repository rules</h3>
+            <div id="repo-rules" class="rules"></div>
+            <button id="add-repo" type="button">Add repository rule</button>
+          </li>
+          <li>
+            <h3>Owner rules <span class="muted">(organizations and users)</span></h3>
+            <div id="owner-rules" class="rules"></div>
+            <button id="add-owner" type="button">Add owner rule</button>
+          </li>
+          <li>
+            <label class="toggle">
+              <input id="ownContent" type="checkbox" />
+              Each account for its own content
+            </label>
+            <p class="muted">github.com/<em>account</em>/… opens with that account.</p>
+          </li>
+          <li>
+            <label class="row">
+              Default account
+              <select id="defaultAccount"></select>
+            </label>
+            <label class="row">
+              Pages that belong to nobody (dashboard, notifications, search)
+              <select id="generalPages">
+                <option value="default">use the default account</option>
+                <option value="keep">keep the current account</option>
+              </select>
+            </label>
+          </li>
+        </ol>
+
+        <label class="toggle">
+          <input id="inPageNavigation" type="checkbox" />
+          Also switch when following links inside a GitHub tab
+        </label>
+      </section>
+
+      <section aria-labelledby="try-title">
+        <h2 id="try-title">Try a URL</h2>
+        <input id="try-url" type="url" placeholder="https://github.com/owner/repo" />
+        <p id="try-result" class="muted" aria-live="polite"></p>
+      </section>
+
+      <section aria-labelledby="notes-title">
+        <h2 id="notes-title">Good to know</h2>
+        <ul class="muted notes">
+          <li>
+            A browser has one signed-in GitHub account at a time, so a switch applies to all GitHub tabs.
+            Tabs you already have open keep showing what they loaded; the next page you open in them is
+            switched again if needed.
+          </li>
+          <li>Sign-in pages and account settings never trigger a switch.</li>
+          <li>
+            Signing out of an account on GitHub ends its saved sign-in too. Sign in again and the extension
+            picks it up.
+          </li>
+          <li>Saved sign-ins stay in this browser profile and are never synced or sent anywhere.</li>
+        </ul>
+      </section>
+    </main>
+    <script type="module" src="options.js"></script>
+  </body>
+</html>
