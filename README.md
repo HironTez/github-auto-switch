@@ -42,7 +42,8 @@ that shows which account a URL will open with, and why.
 ## How it works
 
 GitHub keeps one signed-in account per browser profile, in a few cookies (`user_session`,
-`__Host-user_session_same_site`, `dotcom_user`, `logged_in`, `_gh_sess`).
+`__Host-user_session_same_site`, `dotcom_user`, `logged_in`). A switch also removes `_gh_sess`, GitHub's
+per-visit state, which GitHub then starts anew for the account switched to.
 
 - **Remembering accounts:** whenever those cookies change to a signed-in account, a GitHub page loads
   signed in, or you open the popup, the extension saves a copy for that account in its local storage.
@@ -51,8 +52,10 @@ GitHub keeps one signed-in account per browser profile, in a few cookies (`user_
   and restarts the load, so the page is served as the right account from the start. In-page navigation
   (clicking links in a GitHub tab) switches and reloads too; you can turn that off.
 - **Checking:** the content script reads the account the loaded page shows (`<meta name="user-login">`).
-  If GitHub rejected the saved sign-in, the extension marks the account as signed out, restores the
-  previous account and shows a red `!` on its toolbar icon.
+  If the page came with another account (for example, a response that was already on its way when the
+  extension switched brought the old account's cookies back), it puts the sign-in in place again and
+  reloads. If GitHub rejected the saved sign-in, the extension marks the account as signed out,
+  restores the previous account and shows a red `!` on its toolbar icon.
 
 It does not use GitHub's private APIs, and it sends nothing anywhere. Saved sign-ins stay in the
 browser profile's extension storage and are never synced. Rules are stored in `storage.sync`, so they

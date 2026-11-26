@@ -220,8 +220,14 @@ test("switches accounts by the rules", async (t) => {
     assert.equal((await open("https://github.com/carol/x")).login, "carol");
     await (await context.newPage()).goto("https://github.com/__revoke/bob");
 
-    const { login } = await open("https://github.com/bob/x");
-    assert.equal(login, "carol", "falls back to the account that was signed in before");
+    const page = await context.newPage();
+    await page.goto("https://github.com/bob/x").catch(() => {});
+    // The load that started as carol may show first; wait for the switch to bob to be rejected.
+    await waitFor(async () => (await storage("local", "sessions")).bob.stale, "bob marked as signed out");
+    await waitFor(
+      async () => (await page.title().catch(() => "")) === "carol /bob/x",
+      "falls back to the account that was signed in before",
+    );
     const sessions = await storage("local", "sessions");
     assert.equal(sessions.bob.stale, true);
     assert.match((await storage("local", "status")).problem, /bob/);
@@ -259,8 +265,28 @@ test("switches accounts by the rules", async (t) => {
     await waitFor(async () => (await storage("local", "sessions")).dave, "dave remembered from the page");
   });
 
+  await t.test("a page served with another account's session is corrected without mixing up saved sign-ins", async () => {
+    assert.equal((await open("https://github.com/bob/x")).login, "bob");
+    await new Promise((r) => setTimeout(r, 1500)); // let pending saves happen
+    const token = (session) => session.cookies.find((c) => c.name === "user_session").value;
+    const before = await storage("local", "sessions");
+    // Like a response that was on its way during a switch and set its own session cookie afterwards:
+    // the cookies name bob, but carry carol's session, so GitHub serves pages as carol.
+    await worker.evaluate(
+      (value) => chrome.cookies.set({ url: "https://github.com/", name: "user_session", value, path: "/", secure: true, httpOnly: true, sameSite: "lax" }),
+      token(before.carol),
+    );
+    const page = await context.newPage();
+    await page.goto("https://github.com/bob/y").catch(() => {});
+    await waitFor(async () => (await page.title().catch(() => "")) === "bob /bob/y", "reloaded as bob");
+    await new Promise((r) => setTimeout(r, 1500));
+    const after = await storage("local", "sessions");
+    assert.equal(token(after.bob), token(before.bob), "bob's saved sign-in is still bob's");
+    assert.equal(token(after.carol), token(before.carol), "carol's saved sign-in is still carol's");
+  });
+
   await t.test("turned off: nothing switches", async () => {
     await setSettings({ ...(await storage("sync", "settings")), enabled: false });
-    assert.equal((await open("https://github.com/alice/x")).login, "dave");
+    assert.equal((await open("https://github.com/alice/x")).login, "bob");
   });
 });

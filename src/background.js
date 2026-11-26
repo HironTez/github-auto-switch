@@ -17,10 +17,13 @@ const GITHUB_URL = "https://github.com/";
 const GITHUB_PAGES = ["https://github.com/*"];
 // The cookies that make up a GitHub sign-in, in the order they are written when switching.
 // dotcom_user names the account, so it is written last, after the session it describes.
-const SESSION_COOKIES = ["_gh_sess", "logged_in", "__Host-user_session_same_site", "user_session", "dotcom_user"];
+const SESSION_COOKIES = ["logged_in", "__Host-user_session_same_site", "user_session", "dotcom_user"];
+// Per-visit state GitHub sends anew with every response. It is not saved: a switch removes it, so a
+// copy left over from another account can't mix with the new sign-in. GitHub starts a fresh one.
+const VISIT_COOKIES = ["_gh_sess"];
 const VERIFY_WINDOW_MS = 30_000;
 const RETRY_WINDOW_MS = 20_000;
-const MAX_ATTEMPTS = 2;
+const MAX_ATTEMPTS = 3;
 
 const log = (...args) => console.error("[github-auto-switch]", ...args);
 
@@ -103,13 +106,17 @@ let swapping = 0;
 async function swapTo(session, storeId) {
   swapping++;
   try {
-    const wanted = new Set(session.cookies.map(cookieKey));
-    for (const c of await readSessionCookies(storeId)) {
-      if (!wanted.has(cookieKey(c))) {
+    // Sign-ins saved by version 0.1.0 still include visit cookies; those are never restored.
+    const cookies = session.cookies.filter((c) => SESSION_COOKIES.includes(c.name));
+    const wanted = new Set(cookies.map(cookieKey));
+    const present = await chrome.cookies.getAll({ url: GITHUB_URL, ...storeArg(storeId) });
+    for (const c of present) {
+      if (!isGithubCookie(c) || wanted.has(cookieKey(c))) continue;
+      if (SESSION_COOKIES.includes(c.name) || VISIT_COOKIES.includes(c.name)) {
         await chrome.cookies.remove({ url: cookieUrl(c), name: c.name, ...storeArg(storeId) });
       }
     }
-    const ordered = [...session.cookies].sort(
+    const ordered = [...cookies].sort(
       (a, b) => SESSION_COOKIES.indexOf(a.name) - SESSION_COOKIES.indexOf(b.name),
     );
     for (const c of ordered) await chrome.cookies.set(toSetDetails(c, storeId));
@@ -144,14 +151,24 @@ function scheduleCapture(storeId) {
   );
 }
 
-async function captureSession(storeId) {
+/**
+ * Saves the signed-in account's cookies. `pageLogin`: the account a page was just served as; the
+ * cookies are only saved if they name the same account.
+ */
+async function captureSession(storeId, { pageLogin } = {}) {
   if (swapping) return scheduleCapture(storeId);
   const cookies = await readSessionCookies(storeId);
   const login = loginOf(cookies);
-  if (!login) return;
+  if (!login || (pageLogin !== undefined && !sameLogin(pageLogin, login))) return;
   await updateSessions((sessions) => {
     const key = login.toLowerCase();
     const previous = sessions[key];
+    // Cookies out of step, e.g. another account's session that a response set after a switch, while
+    // dotcom_user still names this account: never save them as this account's sign-in.
+    const token = sessionValue(cookies);
+    if (Object.entries(sessions).some(([other, s]) => other !== key && sessionValue(s.cookies) === token)) {
+      return false;
+    }
     const saved = new Map(previous?.cookies.map((c) => [cookieKey(c), c.value]));
     if (previous && cookies.length === saved.size && cookies.every((c) => saved.get(cookieKey(c)) === c.value)) {
       return false; // already saved as is
@@ -282,12 +299,13 @@ async function handleNavigation(tabId, url, { mode, requestId, pageLogin }) {
       await setProblem(`Switching to ${target.login} for ${withoutHash(url)} did not work twice in a row, so the extension stopped retrying.`);
       return;
     }
-    if (!sameLogin(current, target.login)) {
-      // Save the signed-in account first: right after signing in, GitHub redirects to a page the
-      // rules may give to another account, before the debounced capture has run.
-      if (current) await captureSession(storeId);
-      await swapTo(target, storeId);
-    }
+    // Save the signed-in account first: right after signing in, GitHub redirects to a page the
+    // rules may give to another account, before the debounced capture has run.
+    if (current && !sameLogin(current, target.login)) await captureSession(storeId);
+    // Put the saved sign-in in place even when the cookies already name the account: the page then
+    // showed another one, so they are out of step (for example, a response that was on its way during
+    // the last switch arrived after it and set its own cookies).
+    await swapTo(target, storeId);
     pending.set(tabId, { expected: target.login, previous: current, storeId, at: Date.now() });
 
     const responded = waitForResponse(tabId, requestId);
@@ -393,7 +411,9 @@ async function handleMessage(message, sender) {
       // Remember the account the page was loaded with. This is how accounts that were signed in
       // before the extension had access to github.com (or that GitHub's account switcher selects)
       // become known: opening any GitHub page with them is enough.
-      if (message.login && !message.inPage) await captureSession(await storeIdForTab(sender.tab.id));
+      if (message.login && !message.inPage) {
+        await captureSession(await storeIdForTab(sender.tab.id), { pageLogin: message.login });
+      }
       if (!message.inPage) await handlePageReport(sender.tab.id, sender.url ?? message.url, message.login);
       // Browsers with webNavigation report in-page navigation themselves.
       else if (!historyEvents) handleInPageNavigation(sender.tab.id, message.url);
