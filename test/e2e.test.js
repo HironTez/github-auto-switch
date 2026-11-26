@@ -244,6 +244,21 @@ test("switches accounts by the rules", async (t) => {
     assert.equal((await open("https://github.com/dave/repo")).login, "dave");
   });
 
+  await t.test("an account already signed in is remembered by opening any GitHub page", async () => {
+    // Like installing the extension while signed in: the sign-in cookies don't change any more.
+    // Let the save that the last switch's cookie change scheduled (1 s later) happen first.
+    await new Promise((r) => setTimeout(r, 1500));
+    await worker.evaluate(() =>
+      chrome.storage.local.get("sessions").then(({ sessions }) => {
+        delete sessions.dave;
+        return chrome.storage.local.set({ sessions });
+      }),
+    );
+    // A settings page never switches, so only the page itself can make dave known.
+    assert.equal((await open("https://github.com/settings/profile")).login, "dave");
+    await waitFor(async () => (await storage("local", "sessions")).dave, "dave remembered from the page");
+  });
+
   await t.test("turned off: nothing switches", async () => {
     await setSettings({ ...(await storage("sync", "settings")), enabled: false });
     assert.equal((await open("https://github.com/alice/x")).login, "dave");

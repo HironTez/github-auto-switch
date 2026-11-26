@@ -15,9 +15,10 @@ One Manifest V3 codebase, no build step, for Chrome, Edge, Brave, Opera, Firefox
 ## Setup
 
 1. Install the extension (see [Install](#install)). Its settings page opens.
-2. Sign in to each of your accounts on github.com once. GitHub's own **Add account** (profile menu →
-   *Switch account* → *Add account*) is the easiest way: it keeps the other accounts signed in. The
-   extension remembers every account you sign in to.
+2. Open github.com once with each of your accounts. If you already use GitHub's account switcher
+   (profile menu → *Switch account*), switching to each account once is enough; otherwise add them
+   there with *Add account*, which keeps the other accounts signed in. The extension remembers every
+   account a GitHub page is opened with (and the signed-in one whenever you open its popup).
 3. On the settings page, set your rules.
 
 ## Rules
@@ -43,8 +44,8 @@ that shows which account a URL will open with, and why.
 GitHub keeps one signed-in account per browser profile, in a few cookies (`user_session`,
 `__Host-user_session_same_site`, `dotcom_user`, `logged_in`, `_gh_sess`).
 
-- **Remembering accounts:** every time those cookies change to a signed-in account, the extension saves
-  a copy for that account in its local storage.
+- **Remembering accounts:** whenever those cookies change to a signed-in account, a GitHub page loads
+  signed in, or you open the popup, the extension saves a copy for that account in its local storage.
 - **Switching:** when a tab starts loading a github.com page, the extension asks the rules which account
   it should use. If that account isn't the signed-in one, it puts the account's saved cookies in place
   and restarts the load, so the page is served as the right account from the start. In-page navigation

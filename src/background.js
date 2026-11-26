@@ -3,7 +3,8 @@
 //
 // How switching works
 // - GitHub's sign-in lives in a few cookies (SESSION_COOKIES). Whenever they change to a signed-in
-//   account, the extension keeps a copy of them for that account ("session").
+//   account, a GitHub page loads signed in, or the popup opens, the extension keeps a copy of them for
+//   that account ("session").
 // - When a tab starts loading a github.com page, the rules (lib/rules.js) pick an account. If it is not
 //   the signed-in one, the extension puts that account's cookies in place and restarts the load.
 // - The content script reports which account the loaded page shows. If GitHub did not accept the
@@ -151,6 +152,10 @@ async function captureSession(storeId) {
   await updateSessions((sessions) => {
     const key = login.toLowerCase();
     const previous = sessions[key];
+    const saved = new Map(previous?.cookies.map((c) => [cookieKey(c), c.value]));
+    if (previous && cookies.length === saved.size && cookies.every((c) => saved.get(cookieKey(c)) === c.value)) {
+      return false; // already saved as is
+    }
     // Only a new session (a fresh sign-in) clears the signed-out mark; seeing the same dead
     // session again, for example right after switching to it, does not.
     const stale = Boolean(previous?.stale) && sessionValue(previous.cookies) === sessionValue(cookies);
@@ -385,12 +390,17 @@ async function handleMessage(message, sender) {
   switch (message?.type) {
     case "page":
       if (sender.tab?.id == null || sender.frameId !== 0) return null;
+      // Remember the account the page was loaded with. This is how accounts that were signed in
+      // before the extension had access to github.com (or that GitHub's account switcher selects)
+      // become known: opening any GitHub page with them is enough.
+      if (message.login && !message.inPage) await captureSession(await storeIdForTab(sender.tab.id));
       if (!message.inPage) await handlePageReport(sender.tab.id, sender.url ?? message.url, message.login);
       // Browsers with webNavigation report in-page navigation themselves.
       else if (!historyEvents) handleInPageNavigation(sender.tab.id, message.url);
       return null;
     case "currentAccount": {
       const storeId = message.tabId != null ? await storeIdForTab(message.tabId) : undefined;
+      captureSession(storeId).catch(log);
       return loginOf(await readSessionCookies(storeId));
     }
     case "removeAccount":
