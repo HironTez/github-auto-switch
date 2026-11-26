@@ -3,8 +3,8 @@
 // - Tells the background which account the page was rendered for, as soon as GitHub's
 //   <meta name="user-login"> ("" when signed out) has arrived, so a page that loaded with the wrong
 //   account is corrected without waiting for the rest of it.
-// - Answers which account the page shows, so the background can put that account back when the user
-//   returns to this tab.
+// - Answers which account the page shows, and when the page sent requests, so the background can put
+//   that account back when the user returns to this tab, and reload it if it sent requests as another.
 // - Switches before navigating when a clicked link needs another account, so that page never loads
 //   with the wrong one.
 // - Reports GitHub's in-page navigation. The background only uses that where the browser can't tell
@@ -18,8 +18,25 @@
   const report = (inPage) =>
     send({ type: "page", url: location.href, login: shownLogin(), inPage, docStart }).catch(() => {});
 
+  // When this page's own requests to github.com started (ms since 1970), oldest first. The background
+  // compares them with when the signed-in account changed, to tell whether the page sent requests as
+  // another account while it was in the background.
+  const requestTimes = [];
+  try {
+    new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) {
+        if (entry.name.startsWith(`${location.origin}/`)) requestTimes.push(Math.round(performance.timeOrigin + entry.startTime));
+      }
+      if (requestTimes.length > 300) requestTimes.splice(0, requestTimes.length - 300);
+    }).observe({ type: "resource", buffered: true });
+  } catch {
+    // No resource timing: the background can't check this page's requests.
+  }
+
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (message?.type === "shownLogin") sendResponse({ login: shownLogin(), url: location.href });
+    if (message?.type === "shownLogin") {
+      sendResponse({ login: shownLogin(), url: location.href, requests: requestTimes.slice().sort((a, b) => a - b) });
+    }
   });
 
   // ---------------------------------------------------------------------------------------------------

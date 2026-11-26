@@ -111,10 +111,10 @@
         <h2 id="notes-title">Good to know</h2>
         <ul class="muted notes">
           <li>
-            A browser has one signed-in GitHub account at a time. The extension gives it to the GitHub tab
-            in front: switching to a tab puts back the account its page was opened with, without
-            reloading. A page that needs another account and loads in a background tab switches only
-            while it loads.
+            A browser has one signed-in GitHub account at a time, and only the GitHub tab in front
+            switches it. Switching to a tab puts back the account its page was opened with, without
+            reloading. The tab reloads instead if its page loaded, or sent updates, with another account
+            while it was in the background.
           </li>
           <li>Sign-in pages and account settings never trigger a switch.</li>
           <li>

@@ -52,9 +52,16 @@ per-visit state, which GitHub then starts anew for the account switched to.
   and restarts the load, so the page is served as the right account from the start. A clicked link in
   a GitHub tab that needs another account switches before the new page loads; in-page navigation that
   needs another account switches and reloads. You can turn both off.
-- **Following the tab in front:** switching to a GitHub tab (or window) puts back the account its page
-  was opened with, without reloading it, so its links and live updates keep working as that account.
-  A page that loads in a background tab gives the account back to the tab in front once it has loaded.
+- **Only the tab in front switches.** A page that loads in a background tab keeps the signed-in account,
+  so the tab you are looking at is never signed out from under you.
+- **Coming back to a tab:** switching to a GitHub tab (or window) puts back the account its page was
+  opened with, without reloading it, so its links and live updates keep working as that account. The
+  tab is reloaded instead when, while it was in the background:
+  - its page loaded with another account than the rules choose, or
+  - its page sent requests to github.com (polling, updates) while another account was signed in. The
+    content script notes when the page's requests started (resource timing); the background notes when
+    the signed-in account changed. A second check a few seconds later catches requests that were still
+    under way when you switched to the tab.
 - **Checking:** the content script reads the account the loaded page shows (`<meta name="user-login">`).
   It reports as soon as that tag arrives, before the rest of the page. If the page came with another
   account (for example, a response that was already on its way when the
@@ -68,9 +75,10 @@ follow your browser profile if you sync it.
 
 ### Limits
 
-- **One account per profile at a time.** GitHub's cookies are shared by every tab, so the extension
-  gives them to the tab in front. While a background tab loads a page of another account, the tab in
-  front briefly runs as that account.
+- **One account per profile at a time.** GitHub's cookies are shared by every tab, and an extension
+  can't give a single request other cookies, so tabs of different accounts can't run side by side. The
+  extension gives the account to the tab in front, and reloads a tab on return when needed (above).
+  For accounts open side by side, use a browser profile (or Firefox container) per account.
 - **Typed URLs and links from outside GitHub** (other apps, other sites, new tabs) may show the old
   account first in browsers that can't hold a page load (Safari): the extension then switches and
   reloads. Links clicked inside GitHub switch before loading.
@@ -153,7 +161,7 @@ the matching code only, no settings or sign-ins.
 | `src/lib/rules.js` | URL classification and rule matching. Pure, no browser APIs. |
 | `src/lib/storage.js` | Storage layout: settings, saved sign-ins, status. |
 | `src/background.js` | Remembers accounts, switches, checks the result. |
-| `src/content.js` | Reports which account a loaded page shows. |
+| `src/content.js` | Reports which account a loaded page shows and when it sent requests; switches before clicked links load. |
 | `src/options/` | Settings page: accounts, rules, URL tester. |
 | `src/popup/` | Toolbar popup: on/off, current account, what this tab uses. |
 | `src/ui/` | Styles and helpers shared by the popup and settings page. |

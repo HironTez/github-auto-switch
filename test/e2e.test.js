@@ -85,11 +85,15 @@ function handle(req, res) {
   const headers = { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" };
   if (token && !current) headers["Set-Cookie"] = signOutCookies;
   requests.push({ path: url.pathname, login: current });
-  res.writeHead(200, headers);
-  res.end(`<!doctype html><html><head>
+  // A request still under way when the tab comes to the front.
+  const delay = url.pathname.endsWith("/slow") ? 1500 : 0;
+  setTimeout(() => {
+    res.writeHead(200, headers);
+    res.end(`<!doctype html><html><head>
 <meta name="user-login" content="${current}">
 <title>${current || "(signed out)"} ${url.pathname}</title>
 </head><body>${current || "signed out"} at ${url.pathname}</body></html>`);
+  }, delay);
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -306,34 +310,76 @@ test("switches accounts by the rules", async (t) => {
     const loads = requests.filter((r) => r.path === "/torvalds/linux").length;
     await aliceTab.bringToFront();
     await waitFor(async () => (await signedInNow()) === "alice", "alice signed in again");
+    await new Promise((resolve) => setTimeout(resolve, 4000)); // past the second check
     assert.equal(requests.filter((r) => r.path === "/torvalds/linux").length, loads, "no reload");
   });
 
-  await t.test("a page loading in a background tab gives the account back to the tab in front", async () => {
+  await t.test("a tab that sent requests as another account in the background is reloaded on return", async () => {
+    const { page: aliceTab, login } = await open("https://github.com/torvalds/live");
+    assert.equal(login, "alice");
+    assert.equal((await open("https://github.com/bob/y")).login, "bob");
+    // Like GitHub's polling and live updates, from the tab in the background.
+    await aliceTab.evaluate(() => fetch("/torvalds/live/poll").then((r) => r.text()));
+    assert.ok(requests.some((r) => r.path === "/torvalds/live/poll" && r.login === "bob"), "the request went out as bob");
+    const loads = requests.filter((r) => r.path === "/torvalds/live" && r.login === "alice").length;
+    await aliceTab.bringToFront();
+    await waitFor(
+      () => requests.filter((r) => r.path === "/torvalds/live" && r.login === "alice").length > loads,
+      "reloaded as alice",
+    );
+    await waitFor(async () => (await signedInNow()) === "alice", "alice signed in");
+  });
+
+  await t.test("a request still under way when the tab comes to the front is caught by the second check", async () => {
+    const { page: aliceTab } = await open("https://github.com/torvalds/focus");
+    assert.equal((await open("https://github.com/bob/w")).login, "bob");
+    const loads = requests.filter((r) => r.path === "/torvalds/focus" && r.login === "alice").length;
+    // Sent as bob; it finishes, and so becomes visible to the page, only after the first check.
+    aliceTab.evaluate(() => fetch("/torvalds/focus/slow").then((r) => r.text())).catch(() => {});
+    await waitFor(() => requests.some((r) => r.path === "/torvalds/focus/slow" && r.login === "bob"), "request sent as bob");
+    await aliceTab.bringToFront();
+    await waitFor(
+      () => requests.filter((r) => r.path === "/torvalds/focus" && r.login === "alice").length > loads,
+      "reloaded as alice",
+    );
+  });
+
+  await t.test("a page loading in a background tab doesn't switch until it comes to the front", async () => {
     const { page: front } = await open("https://github.com/bob/front");
     await front.bringToFront();
-    await worker.evaluate(() => chrome.tabs.create({ url: "https://github.com/carol/background", active: false }));
+    const tabId = await worker.evaluate(
+      async () => (await chrome.tabs.create({ url: "https://github.com/carol/background", active: false })).id,
+    );
+    await waitFor(
+      () => requests.some((r) => r.path === "/carol/background" && r.login === "bob"),
+      "the background tab loaded as bob",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    assert.equal(await signedInNow(), "bob", "the tab in front keeps its account");
+    assert.ok(!requests.some((r) => r.path === "/carol/background" && r.login === "carol"), "not switched in the background");
+
+    await worker.evaluate((id) => chrome.tabs.update(id, { active: true }), tabId);
     await waitFor(
       () => requests.some((r) => r.path === "/carol/background" && r.login === "carol"),
-      "the background tab loaded as carol",
+      "reloaded as carol once in front",
     );
-    await waitFor(async () => (await signedInNow()) === "bob", "bob signed in again for the tab in front");
+    await waitFor(async () => (await signedInNow()) === "carol", "carol signed in");
   });
 
   await t.test("the activity log records switches when turned on", async () => {
     await setSettings({ ...(await storage("sync", "settings")), activityLog: true });
-    assert.equal((await open("https://github.com/carol/logged")).login, "carol");
+    assert.equal((await open("https://github.com/bob/logged")).login, "bob");
     const activity = await waitFor(async () => {
       const entries = (await storage("local", "activity")) ?? [];
-      return entries.some((e) => e.event === "page shows" && e.url.endsWith("/carol/logged")) && entries;
+      return entries.some((e) => e.event === "page shows" && e.url.endsWith("/bob/logged")) && entries;
     }, "activity recorded");
-    const switches = activity.filter((e) => e.event === "switched" && e.url.endsWith("/carol/logged"));
-    assert.deepEqual(switches.map((e) => e.to), ["carol"], "one switch, and no second one from the replaced page");
+    const switches = activity.filter((e) => e.event === "switched" && e.url.endsWith("/bob/logged"));
+    assert.deepEqual(switches.map((e) => e.to), ["bob"], "one switch, and no second one from the replaced page");
     await setSettings({ ...(await storage("sync", "settings")), activityLog: false });
   });
 
   await t.test("turned off: nothing switches", async () => {
     await setSettings({ ...(await storage("sync", "settings")), enabled: false });
-    assert.equal((await open("https://github.com/alice/x")).login, "carol");
+    assert.equal((await open("https://github.com/alice/x")).login, "bob");
   });
 });
