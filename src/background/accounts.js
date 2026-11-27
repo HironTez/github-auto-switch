@@ -2,10 +2,11 @@
 // signed in, and marked as signed out when GitHub ends the session.
 
 import { sameLogin } from "../lib/rules.js";
-import { cookieKey, isGithubCookie, isSwapping, loginOf, pickCookie, readSessionCookies, sessionValue } from "./cookies.js";
+import { isGithubCookie, isSwapping, loginOf, pickCookie, readSessionCookies, sessionValue } from "./cookies.js";
 import { noteAccount, storeKey } from "./history.js";
 import { log, trace } from "./log.js";
 import { updateSessions } from "./state.js";
+import { fingerprintOf, hashToken, sealSignIn, tokenHashOf } from "./vault.js";
 
 const CAPTURE_DELAY_MS = 1000;
 const captureTimers = new Map();
@@ -24,41 +25,39 @@ function scheduleCapture(storeId) {
 }
 
 /**
- * Saves the signed-in account's cookies. `pageLogin`: the account a page was just served as; the
- * cookies are only saved if they name the same account.
+ * Saves the signed-in account's cookies (sealed, vault.js). `pageLogin`: the account a page was just
+ * served as; the cookies are only saved if they name the same account.
  */
 export async function captureSession(storeId, { pageLogin } = {}) {
   if (isSwapping()) return scheduleCapture(storeId);
   const cookies = await readSessionCookies(storeId);
   const login = loginOf(cookies);
   if (!login || (pageLogin !== undefined && !sameLogin(pageLogin, login))) return;
-  await updateSessions((sessions) => {
+  const tokenHash = await hashToken(sessionValue(cookies));
+  const fingerprint = await fingerprintOf(cookies);
+  await updateSessions(async (sessions) => {
     const key = login.toLowerCase();
     const previous = sessions[key];
     // Cookies out of step, e.g. another account's session that a response set after a switch, while
     // dotcom_user still names this account: never save them as this account's sign-in.
-    const token = sessionValue(cookies);
-    if (Object.entries(sessions).some(([other, s]) => other !== key && sessionValue(s.cookies) === token)) {
-      return false;
+    for (const [other, session] of Object.entries(sessions)) {
+      if (other !== key && (await tokenHashOf(session)) === tokenHash) return false;
     }
-    const saved = new Map(previous?.cookies.map((c) => [cookieKey(c), c.value]));
-    if (previous && cookies.length === saved.size && cookies.every((c) => saved.get(cookieKey(c)) === c.value)) {
-      return false; // already saved as is
-    }
+    if (previous?.sealed && previous.fingerprint === fingerprint) return false; // already saved as is
     // Only a new session (a fresh sign-in) clears the signed-out mark; seeing the same dead
     // session again, for example right after switching to it, does not.
-    const stale = Boolean(previous?.stale) && sessionValue(previous.cookies) === token;
-    sessions[key] = { login, cookies: cookies.map(pickCookie), updatedAt: Date.now(), stale };
+    const stale = Boolean(previous?.stale) && (await tokenHashOf(previous)) === tokenHash;
+    sessions[key] = { login, ...(await sealSignIn(login, cookies.map(pickCookie))), updatedAt: Date.now(), stale };
     trace("sign-in saved", { account: login, ...(previous ? {} : { new: true }) });
   });
 }
 
-/** Marks the saved sign-ins that match `predicate` as signed out. */
+/** Marks the saved sign-ins that match `predicate` (may be async) as signed out. */
 export function markStale(predicate) {
-  return updateSessions((sessions) => {
+  return updateSessions(async (sessions) => {
     let changed = false;
     for (const session of Object.values(sessions)) {
-      if (!session.stale && predicate(session)) {
+      if (!session.stale && (await predicate(session))) {
         session.stale = true;
         changed = true;
       }
@@ -84,6 +83,8 @@ export function onCookieChanged({ cookie, removed, cause }) {
     scheduleCapture(cookie.storeId);
   } else if (cookie.name === "user_session" && (cause === "expired_overwrite" || cause === "expired")) {
     // GitHub expires the cookie when the session ends (sign out, revoked session).
-    markStale((s) => sessionValue(s.cookies) === cookie.value).catch(log);
+    hashToken(cookie.value)
+      .then((expired) => markStale(async (s) => (await tokenHashOf(s)) === expired))
+      .catch(log);
   }
 }

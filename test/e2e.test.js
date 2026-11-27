@@ -10,7 +10,7 @@
 // (webRequest, webNavigation.onHistoryStateUpdated), so the fallbacks are tested. Still Chromium.
 
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:https";
 import { tmpdir } from "node:os";
@@ -130,6 +130,7 @@ let server;
 let context;
 let worker; // where the tests call extension APIs: the background, or an extension page once it restarted
 let profile;
+let launchOptions;
 
 before(async () => {
   server = createServer(selfSignedCert(), handle);
@@ -137,7 +138,7 @@ before(async () => {
   const { port } = server.address();
 
   profile = mkdtempSync(join(tmpdir(), "gh-auto-switch-e2e-"));
-  context = await chromium.launchPersistentContext(profile, {
+  launchOptions = {
     channel: "chromium", // the full Chromium build: headless shell cannot load extensions
     ignoreHTTPSErrors: true,
     args: [
@@ -146,7 +147,8 @@ before(async () => {
       `--host-resolver-rules=MAP github.com 127.0.0.1:${port}`,
       "--ignore-certificate-errors",
     ],
-  });
+  };
+  context = await chromium.launchPersistentContext(profile, launchOptions);
   worker = context.serviceWorkers()[0] ?? (await context.waitForEvent("serviceworker"));
 });
 
@@ -311,21 +313,23 @@ test("switches accounts by the rules", async (t) => {
   await t.test("a page served with another account's session is corrected without mixing up saved sign-ins", async () => {
     assert.equal((await open("https://github.com/bob/x")).login, "bob");
     await new Promise((r) => setTimeout(r, 1500)); // let pending saves happen
-    const token = (session) => session.cookies.find((c) => c.name === "user_session").value;
+    // The saved sign-ins are sealed; the fake server knows the tokens, the hashes tell whose is whose.
+    const hash = (token) => createHash("sha256").update(`token ${token}`).digest("base64");
     const before = await storage("local", "sessions");
+    const carolToken = [...sessions.keys()].find((token) => hash(token) === before.carol.tokenHash);
     // Like a response that was on its way during a switch and set its own session cookie afterwards:
     // the cookies name bob, but carry carol's session, so GitHub serves pages as carol.
     await worker.evaluate(
       (value) => chrome.cookies.set({ url: "https://github.com/", name: "user_session", value, path: "/", secure: true, httpOnly: true, sameSite: "lax" }),
-      token(before.carol),
+      carolToken,
     );
     const page = await context.newPage();
     await page.goto("https://github.com/bob/y").catch(() => {});
     await waitFor(async () => (await page.title().catch(() => "")) === "bob /bob/y", "reloaded as bob");
     await new Promise((r) => setTimeout(r, 1500));
     const after = await storage("local", "sessions");
-    assert.equal(token(after.bob), token(before.bob), "bob's saved sign-in is still bob's");
-    assert.equal(token(after.carol), token(before.carol), "carol's saved sign-in is still carol's");
+    assert.equal(after.bob.tokenHash, before.bob.tokenHash, "bob's saved sign-in is still bob's");
+    assert.equal(after.carol.tokenHash, before.carol.tokenHash, "carol's saved sign-in is still carol's");
   });
 
   await t.test("a clicked link that needs another account switches before the page loads", async () => {
@@ -542,8 +546,87 @@ test("switches accounts by the rules", async (t) => {
     await setSettings({ ...(await storage("sync", "settings")), activityLog: false });
   });
 
+  await t.test("saved sign-ins are encrypted: no session token in the extension's storage", async () => {
+    const local = JSON.stringify(await worker.evaluate(() => chrome.storage.local.get(null)));
+    const saved = Object.values(await storage("local", "sessions"));
+    assert.ok(saved.length >= 3 && saved.every((s) => s.sealed && !s.cookies));
+    for (const token of sessions.keys()) assert.equal(local.includes(token), false);
+  });
+
   await t.test("turned off: nothing switches", async () => {
     await setSettings({ ...(await storage("sync", "settings")), enabled: false });
     assert.equal((await open("https://github.com/alice/x")).login, "bob");
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------
+
+test("a passphrase locks the sign-ins; a passkey or the passphrase unlocks them, also after a browser restart", async (t) => {
+  await setSettings({ ...(await storage("sync", "settings")), enabled: true, inPageNavigation: false });
+  const settingsUrl = new URL("/src/options/options.html", worker.url()).href;
+  const options = await context.newPage();
+  await options.goto(settingsUrl);
+
+  await t.test("setting a passphrase on the settings page", async () => {
+    await options.getByPlaceholder("New passphrase").fill("correct horse battery");
+    await options.getByPlaceholder("Again").fill("correct horse battery");
+    await options.getByRole("button", { name: "Set passphrase" }).click();
+    await waitFor(async () => (await storage("local", "vault"))?.mode === "passphrase", "passphrase set");
+    await options.getByRole("button", { name: "Lock now" }).waitFor();
+  });
+
+  await t.test("adding a passkey (Touch ID, Windows Hello; here a virtual one)", async () => {
+    const cdp = await context.newCDPSession(options);
+    await cdp.send("WebAuthn.enable");
+    await cdp.send("WebAuthn.addVirtualAuthenticator", {
+      options: {
+        protocol: "ctap2", transport: "internal", hasResidentKey: true, hasUserVerification: true,
+        isUserVerified: true, hasPrf: true, automaticPresenceSimulation: true,
+      },
+    });
+    await options.reload(); // the Security section asks again whether a platform authenticator is there
+    await options.getByRole("button", { name: /^Also unlock with / }).click();
+    await waitFor(async () => (await storage("local", "vault")).biometric, "passkey added");
+  });
+
+  await t.test("locked: nothing switches; unlocking with the passkey switches the tab in front", async () => {
+    await options.getByRole("button", { name: "Lock now" }).click();
+    await waitFor(async () => !(await storage("session", "vaultKey")), "locked");
+    const current = await signedInNow();
+    const { page, login } = await open("https://github.com/carol/locked");
+    assert.equal(login, current, "not switched while locked");
+
+    await options.bringToFront();
+    await options.getByRole("button", { name: /^Unlock with / }).click();
+    await waitFor(async () => await storage("session", "vaultKey"), "unlocked");
+    await page.bringToFront();
+    await waitFor(async () => (await page.title().catch(() => "")) === "carol /carol/locked", "switched once unlocked");
+    await page.close();
+  });
+
+  await t.test("after a browser restart: locked, and the unlock page asks for the passphrase", async () => {
+    await options.close();
+    await context.close();
+    context = await chromium.launchPersistentContext(profile, launchOptions);
+    const unlock = await waitFor(
+      () => context.pages().find((p) => p.url().endsWith("/src/unlock/unlock.html")),
+      "unlock page opened at start",
+    );
+    worker = unlock;
+    assert.equal(await storage("session", "vaultKey"), undefined, "locked");
+    const bobBefore = (await storage("local", "sessions")).bob;
+    assert.ok(bobBefore.sealed, "sign-ins kept");
+
+    await unlock.getByPlaceholder("Passphrase").fill("wrong passphrase");
+    await unlock.getByRole("button", { name: "Unlock", exact: true }).click();
+    await unlock.getByText("Wrong passphrase.").waitFor();
+    await unlock.getByPlaceholder("Passphrase").fill("correct horse battery");
+    await unlock.getByRole("button", { name: "Unlock", exact: true }).click();
+    await waitFor(() => unlock.isClosed(), "unlock tab closed itself");
+
+    const extensionPage = await context.newPage();
+    await extensionPage.goto(settingsUrl);
+    worker = extensionPage;
+    assert.equal((await open("https://github.com/bob/after-unlock")).login, "bob");
   });
 });

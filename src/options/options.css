@@ -151,3 +151,19 @@ code {
     display: none;
   }
 }
+
+main.narrow {
+  max-width: 480px;
+}
+
+.security {
+  display: grid;
+  gap: 12px;
+}
+
+.security .row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}

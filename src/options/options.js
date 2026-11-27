@@ -1,6 +1,9 @@
 import { isRuleComplete, normalizeSettings, parseGithubUrl, resolveAccount, sameLogin } from "../lib/rules.js";
 import { loadSessions, loadSettings, loadStatus, saveSettings } from "../lib/storage.js";
 import { accountLabel, el, sendMessage, statusTag, watchGithubAccess } from "../ui/account.js";
+import {
+  biometricName, biometricsAvailable, createPasskey, errorLine, newPassphraseForm, showError, unlockForm,
+} from "../ui/unlock.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -248,6 +251,103 @@ $("activity-copy").addEventListener("click", async () => {
 $("activity-clear").addEventListener("click", () => chrome.storage.local.remove("activity"));
 
 // ---------------------------------------------------------------------------------------------------
+// Security: the saved sign-ins' encryption (background/vault.js)
+
+let shownVault = "";
+
+async function renderSecurity({ force = false } = {}) {
+  const status = await sendMessage({ type: "vaultStatus" }).catch((error) => ({ error }));
+  const json = JSON.stringify(status);
+  if (!force && json === shownVault) return; // keeps what is typed in its fields
+  shownVault = json;
+  const box = $("security");
+  const p = (...children) => el("p", { class: "muted" }, ...children);
+  const refresh = () => renderSecurity({ force: true });
+  if (status.error) return box.replaceChildren(el("p", { class: "error" }, String(status.error.message)));
+
+  if (status.mode === "device") {
+    box.replaceChildren(
+      p(
+        "Saved sign-ins are encrypted with a key that only this extension, in this browser profile, can use. ",
+        "A passphrase also locks them whenever the browser starts: nothing switches until you unlock.",
+      ),
+      status.keyWithSignIns
+        ? el("p", { class: "error" }, "This browser gives the extension no key storage (for example, it never remembers history), so the key is kept with the sign-ins. Set a passphrase to protect them.")
+        : null,
+      el("h3", {}, "Lock with a passphrase"),
+      newPassphraseForm("Set passphrase", async (passphrase) => {
+        await sendMessage({ type: "setPassphrase", passphrase });
+        await refresh();
+      }),
+    );
+    return;
+  }
+
+  if (status.locked) {
+    box.replaceChildren(
+      p("Locked with your passphrase. Unlock to switch accounts or to change these settings."),
+      unlockForm({ biometric: status.biometric, onUnlocked: refresh }),
+      el("p", {}, el("button", {
+        type: "button",
+        class: "link",
+        onclick: async () => {
+          if (!confirm("Forget every saved sign-in, the passphrase and the passkey, and start over? Your accounts come back as you open GitHub with each of them.")) return;
+          await sendMessage({ type: "resetVault" }).catch((error) => alert(error.message));
+          await refresh();
+        },
+      }, "Forgot the passphrase?")),
+    );
+    return;
+  }
+
+  const error = errorLine();
+  const run = (job) => async () => {
+    try {
+      await job();
+      showError(error, null);
+      await refresh();
+    } catch (e) {
+      showError(error, e);
+    }
+  };
+  const button = (label, job) => el("button", { type: "button", onclick: run(job) }, label);
+
+  const askOnStart = el("input", { type: "checkbox", checked: status.askOnStart });
+  askOnStart.addEventListener("change", run(() => sendMessage({ type: "setAskOnStart", askOnStart: askOnStart.checked })));
+
+  const name = biometricName();
+  let biometric;
+  if (status.biometric) {
+    biometric = el("div", { class: "row" }, el("span", {}, `${name} unlocks too.`), button(`Remove ${name}`, () => sendMessage({ type: "removeBiometric" })));
+  } else if (await biometricsAvailable()) {
+    biometric = el("div", { class: "row" }, button(`Also unlock with ${name}`, async () => {
+      await sendMessage({ type: "addBiometric", ...(await createPasskey()) });
+    }));
+  } else {
+    biometric = p(`Unlocking with ${name} is not available in this browser.`);
+  }
+
+  box.replaceChildren(
+    p("Saved sign-ins are locked with your passphrase whenever the browser starts. Unlocked now."),
+    el("label", { class: "toggle" }, askOnStart, "Ask to unlock when the browser starts"),
+    biometric,
+    el("div", { class: "row" },
+      button("Lock now", () => sendMessage({ type: "lock" })),
+      button("Remove passphrase", async () => {
+        if (!confirm("Remove the passphrase? The sign-ins stay encrypted with a key kept in this browser, and are no longer locked at start.")) return;
+        await sendMessage({ type: "removePassphrase" });
+      }),
+    ),
+    error,
+    el("h3", {}, "Change passphrase"),
+    newPassphraseForm("Change passphrase", async (passphrase) => {
+      await sendMessage({ type: "setPassphrase", passphrase });
+      await refresh();
+    }),
+  );
+}
+
+// ---------------------------------------------------------------------------------------------------
 // Problems
 
 function showProblem(problem) {
@@ -268,7 +368,8 @@ function renderAll() {
   renderTry();
 }
 
-chrome.storage.onChanged.addListener(async (changes) => {
+chrome.storage.onChanged.addListener(async (changes, area) => {
+  if ("vault" in changes || (area === "session" && "vaultKey" in changes)) renderSecurity();
   if ("settings" in changes) {
     const fresh = await loadSettings();
     // Ignore the echo of our own save; re-render when another page (the popup) changed something.
@@ -290,4 +391,5 @@ chrome.storage.onChanged.addListener(async (changes) => {
 lastSaved = JSON.stringify(settings);
 renderAll();
 showProblem((await loadStatus()).problem);
+renderSecurity();
 await watchGithubAccess($("access"), $("access-grant"));

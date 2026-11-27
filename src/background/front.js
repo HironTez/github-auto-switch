@@ -9,8 +9,9 @@ import { readLogin, storeIdForTab } from "./cookies.js";
 import { requestAsOtherAccount } from "./history.js";
 import { log, trace } from "./log.js";
 import { getSessions, getSettings } from "./state.js";
+import { isLocked } from "./vault.js";
 import {
-  enqueue, frontTab, handleNavigation, isFrontTab, isLoadingNewPage, isPending, moment, noteLoadStart,
+  enqueue, frontTab, handleNavigation, isFrontTab, isGithubTab, isLoadingNewPage, isPending, moment, noteLoadStart,
   restorePrevious, signInAs, startedLoadingSince, stopWaitingExcept, takeSkipped,
 } from "./switching.js";
 
@@ -23,7 +24,7 @@ const RECHECK_MS = 3000;
  * `recheck`: check again after RECHECK_MS (when the tab has just come to the front).
  */
 async function followTab(tabId, { recheck }) {
-  if (isPending(tabId) || !(await getSettings()).enabled) return;
+  if (isPending(tabId) || !(await getSettings()).enabled || !(await isGithubTab(tabId))) return;
   // The tab is loading another page: that page reports for itself and is followed then (followIfFront),
   // or, if its load ends without a page, when the load ends (onTabComplete).
   if (await isLoadingNewPage(tabId)) return;
@@ -54,6 +55,10 @@ async function followTab(tabId, { recheck }) {
     const storeId = await storeIdForTab(tabId);
     const current = await readLogin(storeId);
     if (!sameLogin(current, target.login)) {
+      if (await isLocked()) {
+        trace("can't follow tab in front", { tab: tabId, url: page.url, account: target.login, why: "locked" });
+        return true; // no recheck: unlocking follows the tab in front
+      }
       await signInAs(target, storeId, current);
       trace("followed tab in front", { tab: tabId, url: page.url, from: current, to: target.login });
     }
@@ -79,6 +84,12 @@ async function followTab(tabId, { recheck }) {
 export async function followIfFront(tabId) {
   if (!(await isFrontTab(tabId))) return;
   await followTab(tabId, { recheck: false });
+}
+
+/** After unlocking: the tab in front gets its account (or the switch it missed while locked). */
+export async function followFront() {
+  const front = await frontTab();
+  if (front) await followTab(front.id, { recheck: false });
 }
 
 /** tabs.onUpdated listener for status "complete": a load ended, also one that brought no page. */

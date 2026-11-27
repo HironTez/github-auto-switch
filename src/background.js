@@ -29,16 +29,21 @@ import { captureSession, onCookieChanged } from "./background/accounts.js";
 import { onTabActivated, onTabComplete, onWindowFocused } from "./background/front.js";
 import { log, trace } from "./background/log.js";
 import { createMessageHandler } from "./background/messages.js";
-import { showBadge } from "./background/problems.js";
+import { refreshBadge } from "./background/problems.js";
 import { forgetChanged, getSettings } from "./background/state.js";
 import {
-  forgetTab, handleNavigation, noteLoadStart, onMainFrameSettled, onTabLoaded,
+  forgetTab, handleNavigation, noteLoadStart, onMainFrameSettled, onTabLoaded, onTabLoading,
 } from "./background/switching.js";
-import { loadStatus } from "./lib/storage.js";
+import { checkVault, forgetVault, shouldAskToUnlock } from "./background/vault.js";
 
 const GITHUB_PAGES = ["https://github.com/*"];
 
-chrome.storage.onChanged.addListener(forgetChanged);
+chrome.storage.onChanged.addListener((changes, area) => {
+  forgetChanged(changes);
+  if (area === "local" && "vault" in changes) forgetVault();
+});
+// The unlocked key (vault.js) is for the background only, never for content scripts.
+chrome.storage.session?.setAccessLevel?.({ accessLevel: "TRUSTED_CONTEXTS" })?.catch?.(log);
 chrome.cookies.onChanged.addListener(onCookieChanged);
 
 // ---------------------------------------------------------------------------------------------------
@@ -68,16 +73,19 @@ if (chrome.webRequest?.onResponseStarted) {
   onMainFrame(chrome.webRequest.onResponseStarted, onMainFrameSettled);
   onMainFrame(chrome.webRequest.onErrorOccurred, onMainFrameSettled);
 }
-chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status === "loading") onTabLoading(tabId, tab);
   if (changeInfo.status !== "complete") return;
   if (!chrome.webRequest?.onResponseStarted) onTabLoaded(tabId);
   onTabComplete(tabId);
 });
 
-// Also where webRequest is missing (Safari before 18.4), and for pages outside github.com.
+// GitHub pages only, like every listener here: the extension stays away from other sites. Also where
+// webRequest is missing (Safari before 18.4). Loads outside github.com: tabs.onUpdated (onTabLoading).
+const GITHUB_NAVIGATION = { url: [{ schemes: ["https"], hostEquals: "github.com" }] };
 chrome.webNavigation?.onBeforeNavigate?.addListener((details) => {
   if (details.frameId === 0) noteLoadStart(details.tabId);
-});
+}, GITHUB_NAVIGATION);
 
 // ---------------------------------------------------------------------------------------------------
 // In-page navigation
@@ -93,7 +101,7 @@ historyEvents?.addListener(
   (details) => {
     if (details.frameId === 0) onInPageNavigation(details.tabId, details.url);
   },
-  { url: [{ schemes: ["https"], hostEquals: "github.com" }] },
+  GITHUB_NAVIGATION,
 );
 
 // ---------------------------------------------------------------------------------------------------
@@ -107,8 +115,9 @@ chrome.tabs.onRemoved.addListener(forgetTab);
 chrome.runtime.onMessage.addListener(createMessageHandler({ onInPageNavigation: historyEvents ? null : onInPageNavigation }));
 
 async function init() {
+  await checkVault().catch(log); // seals sign-ins saved before encryption
   await captureSession(undefined);
-  await showBadge((await loadStatus()).problem);
+  await refreshBadge();
 }
 
 chrome.runtime.onInstalled.addListener(({ reason }) => {
@@ -116,6 +125,19 @@ chrome.runtime.onInstalled.addListener(({ reason }) => {
   if (reason === "install") chrome.runtime.openOptionsPage().catch(log);
 });
 chrome.runtime.onStartup.addListener(() => init().catch(log));
+
+// With a passphrase set, the sign-ins are locked once the browser starts: ask for it right away. Once
+// per browser session, whichever event starts the background: storage.session starts out empty with
+// the browser (and after an update of the extension). Without it, only at the browser's start.
+async function askToUnlockOnce() {
+  if (chrome.storage.session) {
+    if ((await chrome.storage.session.get("unlockAsked")).unlockAsked) return;
+    await chrome.storage.session.set({ unlockAsked: true });
+  }
+  if (await shouldAskToUnlock()) await chrome.tabs.create({ url: chrome.runtime.getURL("src/unlock/unlock.html") });
+}
+if (chrome.storage.session) askToUnlockOnce().catch(log);
+else chrome.runtime.onStartup.addListener(() => askToUnlockOnce().catch(log));
 
 // The browser may stop the background when idle and start it again for the next event.
 trace("background started", {

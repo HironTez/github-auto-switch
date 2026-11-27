@@ -2,11 +2,12 @@
 
 import { captureSession, forgetAccount } from "./accounts.js";
 import { readLogin, storeIdForTab } from "./cookies.js";
-import { followIfFront } from "./front.js";
+import { followFront, followIfFront } from "./front.js";
 import { log, trace } from "./log.js";
-import { setProblem } from "./problems.js";
+import { refreshBadge, setProblem } from "./problems.js";
 import { getSessions, getSettings } from "./state.js";
 import { handleNavigation, handlePageReport, moment } from "./switching.js";
+import * as vault from "./vault.js";
 
 const fromTopFrame = (sender) => sender.tab?.id != null && sender.frameId === 0;
 /**
@@ -19,6 +20,13 @@ export const fromExtensionPage = (sender) =>
 // What content scripts (in GitHub's pages) may send. Every other message is accepted from the
 // extension's own pages only.
 const FROM_CONTENT_SCRIPTS = new Set(["page", "rulesState", "switchForNavigation", "trace"]);
+
+/** The switch the tab in front missed while locked happens now. */
+async function afterUnlock() {
+  trace("unlocked");
+  await refreshBadge();
+  followFront().catch(log);
+}
 
 /**
  * @param {(tabId: number, url: string) => void} onInPageNavigation where the browser can't report
@@ -80,6 +88,38 @@ export function createMessageHandler({ onInPageNavigation }) {
       case "clearProblem":
         await setProblem(null);
         return null;
+      // Popup, settings and unlock page: the saved sign-ins' encryption (vault.js).
+      case "vaultStatus":
+        return vault.vaultStatus();
+      case "unlock":
+        await vault.unlock({ passphrase: message.passphrase, prf: message.prf });
+        await afterUnlock();
+        return null;
+      case "lock":
+        await vault.lock();
+        await refreshBadge();
+        return null;
+      case "setPassphrase":
+        await vault.setPassphrase(message.passphrase);
+        await refreshBadge();
+        return null;
+      case "removePassphrase":
+        await vault.removePassphrase();
+        await afterUnlock();
+        return null;
+      case "addBiometric":
+        await vault.addBiometric({ credentialId: message.credentialId, prfSalt: message.prfSalt, prf: message.prf });
+        return null;
+      case "resetVault":
+        await vault.resetVault();
+        await afterUnlock();
+        return null;
+      case "removeBiometric":
+        await vault.removeBiometric();
+        return null;
+      case "setAskOnStart":
+        await vault.setAskOnStart(message.askOnStart);
+        return null;
       default:
         return null;
     }
@@ -91,7 +131,7 @@ export function createMessageHandler({ onInPageNavigation }) {
       (result) => sendResponse({ result }),
       (error) => {
         log(`message ${message?.type}:`, error);
-        sendResponse({ error: String(error) });
+        sendResponse({ error: error?.message ?? String(error) });
       },
     );
     return true;

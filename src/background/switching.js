@@ -14,6 +14,7 @@ import { log, trace } from "./log.js";
 import { clearProblem, setProblem } from "./problems.js";
 import { sessionStore } from "./session-store.js";
 import { getSessions, getSettings } from "./state.js";
+import { isLocked, openSignIn } from "./vault.js";
 
 // A page that reports this long after its switch is not checked against it any more.
 const VERIFY_WINDOW_MS = 30_000;
@@ -117,6 +118,16 @@ function setSkipped(tabId, mark) {
 }
 
 export const noteLoadStart = (tabId) => loadStarts.set(tabId, moment());
+
+/**
+ * tabs.onUpdated with status "loading": a tab leaving GitHub (or loading any page outside it) starts
+ * a load too, which a switch must not reload over. GitHub's own loads are noted by the GitHub-only
+ * webRequest and webNavigation listeners; their in-page navigation must not count. `tab.url` is only
+ * known for github.com tabs.
+ */
+export function onTabLoading(tabId, tab) {
+  if (!tab?.url?.startsWith("https://github.com/")) noteLoadStart(tabId);
+}
 export const isPending = (tabId) => pending.has(tabId);
 /**
  * The tab's mark from its time in the background ({ restore? }), or undefined; removes it. When the
@@ -156,16 +167,33 @@ export function forgetTab(tabId) {
   setSkipped(tabId, null).catch(log);
 }
 
-/** The tab in front: the active tab of the last focused window. Undefined when that can't be told. */
+/**
+ * The tab in front: the active tab of the last focused window. Undefined when there is none the
+ * extension can see: Safari lists only tabs of sites the extension may access, so a tab in front on
+ * another site is missing.
+ */
 export async function frontTab() {
   const [front] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   return front;
 }
 
-/** Whether `tabId` is the tab in front. When that can't be told, every tab counts as in front. */
+/** Whether `tabId` is the tab in front. When that can't be told (an error), every tab counts as in front. */
 export async function isFrontTab(tabId) {
-  const front = await frontTab().catch(() => undefined);
-  return !front || front.id === tabId;
+  try {
+    return (await frontTab())?.id === tabId;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Whether the tab shows a github.com page. Its URL is visible only for sites the extension may
+ * access, which is github.com alone; other tabs are left alone (Safari asks the user for access to
+ * any site the extension reaches for).
+ */
+export async function isGithubTab(tabId) {
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  return typeof tab?.url === "string" && tab.url.startsWith("https://github.com/");
 }
 
 function allowAttempt(tabId, key) {
@@ -235,6 +263,12 @@ export async function handleNavigation(tabId, url, { mode, requestId, pageLogin,
       trace("background tab, not switched", { tab: tabId, mode, url, account: shown, wants: target.login });
       return false;
     }
+    if (await isLocked()) {
+      // Checked again once unlocked, as the tab in front (front.js).
+      await setSkipped(tabId, mode === "click" ? null : {});
+      trace("can't switch", { tab: tabId, mode, url, wants: target.login, why: "locked" });
+      return false;
+    }
     await setSkipped(tabId, null);
 
     if (!allowAttempt(tabId, `${target.login} ${withoutHash(url)}`)) {
@@ -269,10 +303,12 @@ export async function handleNavigation(tabId, url, { mode, requestId, pageLogin,
  * Puts `target`'s saved sign-in in place. `current`, the account signed in now, is saved first when
  * it is another one: it may be a sign-in not saved yet (right after signing in, GitHub redirects to a
  * page the rules may give to another account, before the debounced capture has run). In the queue.
+ * Throws LockedError (vault.js), before changing anything, when locked.
  */
 export async function signInAs(target, storeId, current) {
+  const cookies = await openSignIn(target);
   if (current && !sameLogin(current, target.login)) await captureSession(storeId);
-  await swapTo(target, storeId);
+  await swapTo({ ...target, cookies }, storeId);
 }
 
 /**
@@ -343,6 +379,12 @@ export async function restorePrevious(tabId, { previous: login, storeId }, seenA
   await enqueue(async () => {
     const previous = (await getSessions())[login.toLowerCase()];
     if (!previous || previous.stale || startedLoadingSince(tabId, seenAt)) return;
+    if (await isLocked()) {
+      // Restored once unlocked, if the tab still shows signed out then (front.js).
+      await setSkipped(tabId, { restore: previous.login });
+      trace("can't restore account", { tab: tabId, account: previous.login, why: "locked" });
+      return;
+    }
     if (!(await isFrontTab(tabId))) {
       // Another tab is in front now and has its own account.
       await setSkipped(tabId, { restore: previous.login });

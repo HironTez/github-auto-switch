@@ -149,3 +149,43 @@ button.link {
   gap: 6px;
   cursor: pointer;
 }
+
+input[type="password"] {
+  min-height: 32px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+input:disabled,
+button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Passphrase forms (ui/unlock.js). */
+form.unlock {
+  display: grid;
+  gap: 8px;
+}
+
+form.unlock .row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+form.unlock input {
+  flex: 1 1 140px;
+  min-width: 0;
+}
+
+.error {
+  margin: 0;
+  color: var(--danger);
+}
+
+.ok {
+  color: var(--success);
+}

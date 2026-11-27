@@ -49,7 +49,8 @@ GitHub keeps one signed-in account per browser profile, in a few cookies (`user_
 per-visit state, which GitHub then starts anew for the account switched to.
 
 - **Remembering accounts:** whenever those cookies change to a signed-in account, a GitHub page loads
-  signed in, or you open the popup, the extension saves a copy for that account in its local storage.
+  signed in, or you open the popup, the extension saves an encrypted copy for that account in its local
+  storage (see [Saved sign-ins and encryption](#saved-sign-ins-and-encryption)).
 - **Switching:** when a tab starts loading a github.com page, the extension asks the rules which account
   it should use. If that account isn't the signed-in one, it puts the account's saved cookies in place
   and restarts the load, so the page is served as the right account from the start. A clicked link in
@@ -75,7 +76,7 @@ per-visit state, which GitHub then starts anew for the account switched to.
   restores the previous account and shows a red `!` on its toolbar icon.
 
 It does not use GitHub's private APIs, and it sends nothing anywhere. Saved sign-ins stay in the
-browser profile's extension storage and are never synced. Rules are stored in `storage.sync`, so they
+browser profile's extension storage, encrypted, and are never synced. Rules are stored in `storage.sync`, so they
 follow your browser profile if you sync it.
 
 ### Limits
@@ -125,6 +126,13 @@ compatibility data (tested by simulating the missing APIs in Chromium, not in Sa
 In-page navigation is reported by the content script, because Safari has no
 `webNavigation.onHistoryStateUpdated`. The toolbar badge shows `!` without its red background.
 
+Safari only lets an extension see tabs and page loads of sites it may access. The extension acts on
+github.com tabs and events only, so Safari shouldn't ask for access to other sites.
+
+Whether Safari offers passkeys (Touch ID) on an extension's own pages is untested; the settings page
+offers biometric unlock only where the browser reports a platform authenticator, and says so when its
+passkeys can't do what unlocking needs.
+
 ## Permissions
 
 `cookies` (save and switch the sign-in cookies), `webRequest` and `webNavigation` (notice GitHub page
@@ -132,26 +140,52 @@ loads and in-page navigation early), `storage`, and access to `https://github.co
 `src/lib/rules.js` is listed as web-accessible on github.com so the content script can load it; it holds
 the matching code only, no settings or sign-ins.
 
-Saved sign-ins (GitHub's session cookies) are kept unencrypted in `storage.local`, a plain file in the
-browser profile. Chrome, Edge and the other Chromium browsers encrypt their own cookie store with a key
-from the system keychain; Safari keeps its cookies inside its own sandbox; Firefox stores cookies
-unencrypted too. So any program running as you, and any copy or backup of the profile folder, can read
-every saved account's sign-in, without the keychain prompt that would guard the browser's own cookies.
-Browsers give extensions no such key. Use **Forget** for accounts you no longer need.
-
 GitHub's own scripts can't reach the saved sign-ins: the content script runs apart from the page. Code
 that took over the browser's github.com process could, through the content script's access to the
-extension's storage, read and change the saved sign-ins, and so make the extension sign you in to an
-account of its choosing. Content scripts may send the background only what they need: they report
+extension's storage, change the saved sign-ins, and so make the extension sign you in to an account of
+its choosing. It can't read them: they are encrypted, and the key that opens them is not in that
+storage. Content scripts may send the background only what they need: they report
 the pages they run in, read the settings and the names of the saved accounts (to tell which account a
 link needs), and ask for a switch before a clicked link loads, which signs the whole profile in to the
 account the rules choose for that link. Every other message (reading the signed-in account, removing
-accounts, clearing problems) is accepted from the popup and the settings page only.
+accounts, clearing problems, anything about the passphrase) is accepted from the extension's own pages
+only.
 
 A page load that needs another account is restarted by the extension after switching. GitHub then sees
 a navigation the browser started itself, as if typed in the address bar, also when a link on another
 site started it. A link on another site can therefore open any GitHub page (a GET request) signed in
 as the account the rules pick for it; it could do so with the account already signed in before.
+
+## Saved sign-ins and encryption
+
+For each account, `storage.local` holds its login, when it was saved, whether GitHub ended the sign-in,
+two SHA-256 hashes (of the session token, to tell sign-ins apart and to notice when GitHub ends one;
+and of all the cookie values, to skip saving what is saved already), and the sign-in cookies
+themselves, encrypted.
+
+Each sign-in is encrypted with AES-256-GCM, under a key agreed (ECDH P-256, then HKDF-SHA-256) between
+a new key pair and the extension's public key, with the account's login bound to it. Saving needs only
+the public key, so new sign-ins are saved also while the extension is locked. Opening them, to
+switch, needs the private key:
+
+- **Without a passphrase (the default):** the private key is a non-extractable WebCrypto key in the
+  extension's IndexedDB. Scripts, the extension's own included, can use it but never read it out, and a
+  copy of the storage file alone opens nothing. It does not stop a program running as you: the browser
+  keeps the key in the same profile folder, and Chromium browsers don't encrypt it there.
+- **With a passphrase:** the private key is kept encrypted with a key derived from the passphrase
+  (PBKDF2-SHA-256, 600,000 iterations). After the browser starts, the extension is locked: it switches
+  nothing, and shows a lock on its toolbar button, until you unlock it in the tab it opens, the popup
+  or the settings page. Unlocked, the key is kept in `storage.session`, which the browser holds in
+  memory and empties when it quits. Nothing in the profile folder opens the sign-ins without the
+  passphrase, so choose one that is hard to guess. A forgotten passphrase can't be recovered: **Forgot
+  the passphrase?** on the settings page forgets the saved sign-ins and starts over.
+- **Biometrics (Touch ID, Windows Hello):** with a passphrase set, a passkey made for the extension can
+  unlock too. Its WebAuthn PRF extension yields a secret only after you verify yourself, and that secret
+  encrypts a second copy of the private key. It needs a browser that allows passkeys on extension pages,
+  and passkeys with PRF support. Tested in Chromium with a virtual authenticator only. The passkey
+  signs in to nothing; your password manager may list it as "GitHub Auto Switch".
+
+Use **Forget** for accounts you no longer need.
 
 ## Layout
 
@@ -166,11 +200,12 @@ as the account the rules pick for it; it could do so with the account already si
 | `src/background/session-store.js` | Values the background keeps across its own restarts (storage.session). |
 | `src/background/history.js` | When the signed-in account changed, to tell which requests went out as which account. |
 | `src/background/messages.js` | Messages from the content script, popup and settings page. |
+| `src/background/vault.js`, `keystore.js` | Encrypts the saved sign-ins; passphrase, biometric unlock, locking. |
 | `src/background/state.js`, `log.js`, `problems.js` | Cached settings and sign-ins, activity log, toolbar problems. |
 | `src/content.js` | Reports which account a page shows and when it sent requests; switches before clicked links load. |
 | `src/lib/rules.js` | URL classification and rule matching. Pure, no browser APIs. |
 | `src/lib/storage.js` | Storage layout: settings, saved sign-ins, status (and the other keys). |
-| `src/options/`, `src/popup/`, `src/ui/` | Settings page, toolbar popup, and what they share. |
+| `src/options/`, `src/popup/`, `src/unlock/`, `src/ui/` | Settings page, toolbar popup, unlock page, and what they share (`ui/unlock.js`: passphrase forms, passkeys). |
 | `icons/` | Generated by `scripts/make-icons.mjs` (`npm run icons`). |
 | `scripts/build.mjs`, `scripts/targets.mjs` | Builds the per-browser packages in `dist/` (`npm run build`). |
 | `test/` | Unit tests (rules, build, parts of the background); end-to-end test with Chromium and a fake github.com. |
@@ -195,5 +230,5 @@ npm run start:chromium   # launch Chromium with the extension from the source tr
 The end-to-end tests need Playwright's Chromium (`npx playwright install chromium`). They run a local
 HTTPS server that behaves like github.com where it matters (sign-in cookies, `user-login` meta tag,
 revoked sessions), make Chromium resolve `github.com` to it, and check every rule kind, in-page
-navigation, clicked links, tabs coming to the front, recovery from a revoked session, and signing in to
-a new account.
+navigation, clicked links, tabs coming to the front, recovery from a revoked session, signing in to
+a new account, and the passphrase lock (with a virtual passkey, and across a browser restart).

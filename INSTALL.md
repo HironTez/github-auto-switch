@@ -212,6 +212,26 @@ Example for three accounts, `me`, `me-work` and `client-bot`:
 
 Type a URL into **Try a URL** to see which account it will open with, and why.
 
+### Lock with a passphrase (optional)
+
+Saved sign-ins are always encrypted, with a key the browser keeps for the extension. A passphrase also
+locks them whenever the browser starts, so that nothing in your profile folder opens them without it.
+See [Saved sign-ins and encryption](README.md#saved-sign-ins-and-encryption).
+
+1. On the settings page, under **Security**, type a passphrase (at least 8 characters) twice and click
+   **Set passphrase**.
+2. Optional: click **Also unlock with Touch ID** (Windows Hello on Windows) and confirm. This creates a
+   passkey for the extension. The button is missing where the browser can't do it, and the page says
+   so if your device's passkeys don't support it.
+3. **Ask to unlock when the browser starts** is on: after each start, a tab asks for the passphrase (or
+   Touch ID) and closes once unlocked. Turned off, unlock from the toolbar popup when you need it.
+
+While locked, pages open with whichever account is signed in, and the toolbar button shows a lock.
+Unlock from the popup, the settings page or that tab; the tab in front then gets its account. **Lock
+now** locks until you unlock again; **Remove passphrase** goes back to the default. If you forget the
+passphrase, **Forgot the passphrase?** forgets the saved sign-ins and the passphrase; open GitHub
+with each account again to save them anew.
+
 ### Day to day
 
 - The toolbar button turns switching on or off. It also shows who is signed in now and which account
@@ -223,9 +243,7 @@ Type a URL into **Try a URL** to see which account it will open with, and why.
   installed in each profile.
 - A red **!** on the toolbar button means something needs your attention, usually an account to sign in
   to again. The popup says what.
-- Saved sign-ins are kept unencrypted in the extension's storage, a plain file in your browser profile.
-  Unlike the browser's own cookies, which Chromium browsers encrypt with the system keychain, any
-  program running as you, and any copy or backup of the profile folder, can read them. Use **Forget**
-  for accounts you no longer need. See [Permissions](README.md#permissions).
+- A lock on the toolbar button means the extension is locked (see below): it switches nothing until you
+  unlock it.
 - If switching misbehaves, turn on **Activity log** on the settings page, reproduce the problem, and use
   **Copy**. See [Troubleshooting](README.md#troubleshooting).
